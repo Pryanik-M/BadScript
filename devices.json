@@ -1,0 +1,9 @@
+[
+  {
+    "uid": "02da74fc",
+    "name": "1",
+    "host": "10.60.62.51",
+    "port": 8765,
+    "secret": "mypassword123"
+  }
+]

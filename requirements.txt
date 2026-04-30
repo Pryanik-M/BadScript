@@ -1,0 +1,14 @@
+websockets>=12
+cryptography>=41
+
+# -- Optional, but recommended --
+# Screenshots:
+mss>=9
+pillow>=10
+
+# Camera streaming:
+# opencv-python>=4.8
+
+# Keylogger (choose one):
+# keyboard>=0.13
+# pynput>=1.7
