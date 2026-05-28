@@ -846,7 +846,7 @@ class UpdateDialog:
             messagebox.showerror("Error", "Device not connected")
             return
         if not messagebox.askyesno("GitHub Update",
-                "Update from GitHub (Pryanik-M/GoodScript)?\nServer will restart after update."):
+                "Update from GitHub (Pryanik-M/BadScript)?\nServer will restart after update."):
             return
         self.github_btn.configure(state="disabled")
         self.status_var.set("Sending update command...")

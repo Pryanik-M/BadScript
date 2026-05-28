@@ -1232,30 +1232,46 @@ def keyboard_press(key):
 # ===================================================================
 # Auto-update functionality
 # ===================================================================
-GITHUB_REPO = "Pryanik-M/GoodScript"
+GITHUB_REPO = "Pryanik-M/BadScript"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 UPDATE_DIR = os.path.join(SERVER_DIR, ".update_temp")
+
+
+def _github_headers():
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    return headers
+
 
 async def get_latest_release_url():
     """Get the latest release or archive URL from GitHub."""
     try:
-        # Try to get latest release first
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github.v3+json"})
+        req = urllib.request.Request(api_url, headers=_github_headers())
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             if "assets" in data and data["assets"]:
-                # Return first asset (usually the main archive)
                 return data["assets"][0]["browser_download_url"], data.get("tag_name", "unknown")
     except (urllib.error.URLError, urllib.error.HTTPError, Exception) as e:
         log.debug("Failed to get release: %s, trying archive fallback", e)
     
-    # Fallback: get latest commit archive
+    # Fallback: get default branch from API, then download archive
     try:
-        archive_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
-        req = urllib.request.Request(archive_url)
-        with urllib.request.urlopen(req, timeout=5) as response:
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}"
+        req = urllib.request.Request(api_url, headers=_github_headers())
+        with urllib.request.urlopen(req, timeout=10) as response:
+            repo_data = json.loads(response.read().decode())
+            branch = repo_data.get("default_branch", "main")
+    except Exception:
+        branch = "main"
+    
+    try:
+        archive_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{branch}.zip"
+        req = urllib.request.Request(archive_url, headers=_github_headers())
+        with urllib.request.urlopen(req, timeout=10) as response:
             if response.status == 200:
-                return archive_url, "main"
+                return archive_url, branch
     except Exception as e:
         log.error("Failed to get archive: %s", e)
     
