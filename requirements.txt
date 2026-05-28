@@ -12,3 +12,13 @@ pillow>=10
 # Keylogger (choose one):
 # keyboard>=0.13
 # pynput>=1.7
+
+# Process/system info:
+psutil>=5.9
+
+# Audio recording:
+# sounddevice>=0.4
+# numpy>=1.24
+
+# Mouse/keyboard control:
+# pyautogui>=0.9

