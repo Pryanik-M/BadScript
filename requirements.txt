@@ -22,3 +22,6 @@ psutil>=5.9
 
 # Mouse/keyboard control:
 # pyautogui>=0.9
+
+# Telegram bot:
+# python-telegram-bot>=20

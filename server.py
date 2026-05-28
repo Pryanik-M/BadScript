@@ -2121,7 +2121,7 @@ def _deobfuscate_secret(obf: str) -> str:
 
 
 def install_autostart(secret=None):
-    """Install autostart. Windows: HKCU registry. Linux: ~/.config/autostart/ .desktop"""
+    """Install autostart. Windows: HKCU registry. Linux: systemd user service + .desktop"""
     python_exe = sys.executable
     server_py = os.path.abspath(__file__)
 
@@ -2167,18 +2167,53 @@ def install_autostart(secret=None):
             print(f"Autostart failed: {e}")
             return False
     else:
+        server_dir = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isabs(python_exe):
+            python_exe = os.path.join(server_dir, python_exe)
+
+        # Try systemd user service first
+        systemd_dir = os.path.expanduser("~/.config/systemd/user")
+        installed = False
+        try:
+            os.makedirs(systemd_dir, exist_ok=True)
+            service_content = (
+                "[Unit]\n"
+                "Description=Remote Admin Server\n"
+                "After=network.target\n\n"
+                "[Service]\n"
+                f"ExecStart={python_exe} {server_py} --secret \"{obf_secret}\" --watchdog\n"
+                f"WorkingDirectory={server_dir}\n"
+                "Restart=on-failure\n"
+                "RestartSec=10\n\n"
+                "[Install]\n"
+                "WantedBy=default.target\n"
+            )
+            service_path = os.path.join(systemd_dir, "remoteservice.service")
+            with open(service_path, "w") as f:
+                f.write(service_content)
+
+            try:
+                subprocess.run(["systemctl", "--user", "daemon-reload"],
+                               capture_output=True, timeout=10)
+                subprocess.run(["systemctl", "--user", "enable", "remoteservice.service"],
+                               capture_output=True, timeout=10)
+                log.info("Autostart installed via systemd user service")
+                print("Autostart installed: systemd --user service")
+                installed = True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+        except Exception as e:
+            log.warning("systemd install failed: %s", e)
+
+        # Fallback: .desktop file
         autostart_dir = os.path.expanduser("~/.config/autostart")
         os.makedirs(autostart_dir, exist_ok=True)
         desktop_path = os.path.join(autostart_dir, "remoteservice.desktop")
-        server_dir = os.path.dirname(os.path.abspath(__file__))
-        python_exe = sys.executable
-        if not os.path.isabs(python_exe):
-            python_exe = os.path.join(server_dir, python_exe)
         desktop_content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=RemoteService\n"
-            f'Exec={python_exe} {server_dir}/server.py --secret "{obf_secret}" --hidden --watchdog\n'
+            f'Exec={python_exe} {server_dir}/server.py --secret "{obf_secret}" --watchdog\n'
             f'Path={server_dir}\n'
             "Hidden=false\n"
             "NoDisplay=true\n"
@@ -2190,16 +2225,19 @@ def install_autostart(secret=None):
                 f.write(desktop_content)
             os.chmod(desktop_path, 0o755)
             log.info("Autostart installed via .desktop: %s", desktop_path)
-            print(f"Autostart installed: {desktop_path}")
-            return True
+            if not installed:
+                print(f"Autostart installed: {desktop_path}")
+            installed = True
         except Exception as e:
             log.error(f"Linux autostart failed: {e}")
-            print(f"Autostart failed: {e}")
-            return False
+            if not installed:
+                print(f"Autostart failed: {e}")
+
+        return installed
 
 
 def remove_autostart():
-    """Remove autostart entry. Windows: HKCU registry. Linux: ~/.config/autostart/"""
+    """Remove autostart entry. Windows: HKCU registry. Linux: systemd + .desktop"""
     success = True
     if IS_WINDOWS:
         try:
@@ -2227,6 +2265,25 @@ def remove_autostart():
                 except Exception as e:
                     log.warning(f"Failed to remove {vbs_path}: {e}")
     else:
+        # Remove systemd user service
+        service_path = os.path.expanduser("~/.config/systemd/user/remoteservice.service")
+        if os.path.exists(service_path):
+            try:
+                subprocess.run(["systemctl", "--user", "stop", "remoteservice.service"],
+                               capture_output=True, timeout=10)
+                subprocess.run(["systemctl", "--user", "disable", "remoteservice.service"],
+                               capture_output=True, timeout=10)
+                os.remove(service_path)
+                subprocess.run(["systemctl", "--user", "daemon-reload"],
+                               capture_output=True, timeout=10)
+                log.info("Removed systemd service")
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            except Exception as e:
+                log.error(f"Failed to remove systemd service: {e}")
+                success = False
+
+        # Remove .desktop autostart
         desktop_path = os.path.expanduser("~/.config/autostart/remoteservice.desktop")
         if os.path.exists(desktop_path):
             try:
