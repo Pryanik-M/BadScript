@@ -699,8 +699,8 @@ class UpdateDialog:
         self.win.transient(parent)
         self.win.grab_set()
         self.dev = device
-        self.selected_files = []
         self.zip_path = None
+        self.status_var = tk.StringVar(value="")
 
         tk.Label(self.win, text="Remote Update: " + device.name,
                  bg=C_SURFACE, fg=C_FG, font=("Segoe UI", 12, "bold")).pack(pady=(10, 5))
@@ -716,20 +716,7 @@ class UpdateDialog:
         self.quick_btn = mbtn(f1, "⚡ Update Now", self._quick_update, width=16)
         self.quick_btn.pack(pady=2)
 
-        # ── Section 2: File Upload ──
-        f2 = tk.LabelFrame(self.win, text="Upload Files", bg=C_SURFACE, fg=C_FG,
-                           font=("Segoe UI", 10, "bold"))
-        f2.pack(fill="x", padx=20, pady=(4, 4), ipady=8)
-
-        self.files_lbl = mlabel(f2, "[no files selected]", fg=C_FG_DIM)
-        self.files_lbl.pack(pady=(2, 4))
-
-        btn_row = tk.Frame(f2, bg=C_SURFACE)
-        btn_row.pack(pady=2)
-        mbtn(btn_row, "Browse", self._browse).pack(side="left", padx=4)
-        mbtn(btn_row, "Send to Device", self._send_files).pack(side="left", padx=4)
-
-        # ── Section 3: ZIP Update ──
+        # ── Section 2: ZIP Update ──
         f3 = tk.LabelFrame(self.win, text="ZIP Update", bg=C_SURFACE, fg=C_FG,
                            font=("Segoe UI", 10, "bold"))
         f3.pack(fill="x", padx=20, pady=(4, 4), ipady=8)
@@ -747,7 +734,7 @@ class UpdateDialog:
         self.apply_btn.pack(side="left", padx=4)
         self.apply_btn.configure(state="disabled")
 
-        # ── Section 4: GitHub Auto Update ──
+        # ── Section 3: GitHub Auto Update ──
         f4 = tk.LabelFrame(self.win, text="GitHub Auto Update", bg=C_SURFACE, fg=C_FG,
                            font=("Segoe UI", 10, "bold"))
         f4.pack(fill="x", padx=20, pady=(4, 4), ipady=8)
@@ -759,7 +746,6 @@ class UpdateDialog:
         self.github_btn.pack(pady=2)
 
         # ── Status ──
-        self.status_var = tk.StringVar(value="")
         mlabel(self.win, textvariable=self.status_var, fg=C_FG_DIM).pack(pady=4)
 
         mbtn(self.win, "Close", self.win.destroy).pack(pady=(2, 8))
