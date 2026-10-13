@@ -13,7 +13,9 @@
 
 <!-- Вкладки -->
 <div class="tabs">
-    <button class="tab active" data-tab="tab-screenshot">&#x1f4f8; Скриншот</button>
+    <button class="tab active" data-tab="tab-screen">&#x1f5a5; Экран (Live)</button>
+    <button class="tab" data-tab="tab-cam">&#x1f4f9; Камера (Live)</button>
+    <button class="tab" data-tab="tab-screenshot">&#x1f4f8; Скриншот</button>
     <button class="tab" data-tab="tab-exec">&#x1f4bb; Команда</button>
     <button class="tab" data-tab="tab-shell">&#x1f5a5; Терминал</button>
     <button class="tab" data-tab="tab-files">&#x1f4c1; Файлы</button>
@@ -24,8 +26,71 @@
     <button class="tab" data-tab="tab-manage">&#x1f527; Управление</button>
 </div>
 
+<!-- Трансляция экрана (Live) -->
+<div class="tab-content active" id="tab-screen">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" id="btn-screen-stream" onclick="toggleScreenStream()">
+            &#x25b6; Запустить трансляцию экрана
+        </button>
+        <label style="color:var(--fg-dim);font-size:13px;margin-left:8px;">FPS:</label>
+        <select id="screen-fps" class="form-select" onchange="onScreenSettingsChange()">
+            <option value="3">3 FPS</option>
+            <option value="5" selected>5 FPS</option>
+            <option value="10">10 FPS</option>
+            <option value="15">15 FPS</option>
+        </select>
+        <label style="color:var(--fg-dim);font-size:13px;margin-left:8px;">Качество:</label>
+        <select id="screen-quality" class="form-select" onchange="onScreenSettingsChange()">
+            <option value="40">40%</option>
+            <option value="60" selected>60%</option>
+            <option value="80">80%</option>
+        </select>
+        <button class="btn btn-outline" onclick="toggleFullscreen('screen-stream-container')">
+            &#x26f6; Во весь экран
+        </button>
+    </div>
+    <div id="screen-stream-container" class="stream-viewer">
+        <div class="stream-overlay" id="screen-stream-badge" style="display:none;">
+            <span class="dot dot-red"></span> LIVE SCREEN <span id="screen-fps-counter"></span>
+        </div>
+        <img id="screen-stream-img" src="" style="display:none;" alt="Screen stream">
+        <p class="placeholder" id="screen-stream-placeholder">Нажмите «Запустить трансляцию экрана» для начала показа</p>
+    </div>
+</div>
+
+<!-- Трансляция с камеры (Live) -->
+<div class="tab-content" id="tab-cam">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" id="btn-cam-stream" onclick="toggleCamStream()">
+            &#x25b6; Включить камеру
+        </button>
+        <label style="color:var(--fg-dim);font-size:13px;margin-left:8px;">Камера:</label>
+        <select id="cam-index" class="form-select">
+            <option value="0" selected>Камера 0 (основная)</option>
+            <option value="1">Камера 1 (внешняя/вторая)</option>
+            <option value="2">Камера 2</option>
+        </select>
+        <label style="color:var(--fg-dim);font-size:13px;margin-left:8px;">FPS:</label>
+        <select id="cam-fps" class="form-select">
+            <option value="5">5 FPS</option>
+            <option value="10" selected>10 FPS</option>
+            <option value="15">15 FPS</option>
+        </select>
+        <button class="btn btn-outline" onclick="toggleFullscreen('cam-stream-container')">
+            &#x26f6; Во весь экран
+        </button>
+    </div>
+    <div id="cam-stream-container" class="stream-viewer">
+        <div class="stream-overlay" id="cam-stream-badge" style="display:none;">
+            <span class="dot dot-red"></span> LIVE CAM <span id="cam-fps-counter"></span>
+        </div>
+        <img id="cam-stream-img" src="" style="display:none;" alt="Camera stream">
+        <p class="placeholder" id="cam-stream-placeholder">Нажмите «Включить камеру» для начала видеотрансляции</p>
+    </div>
+</div>
+
 <!-- Скриншот -->
-<div class="tab-content active" id="tab-screenshot">
+<div class="tab-content" id="tab-screenshot">
     <div class="tab-toolbar">
         <button class="btn btn-primary" onclick="sendCmd('screenshot', {quality: 70})">
             &#x1f4f7; Сделать скриншот

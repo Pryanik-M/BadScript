@@ -414,6 +414,13 @@ class ScreenStream:
                 pass
             self.task = None
 
+    def _grab_screen_frame(self, sct, monitor):
+        sct_img = sct.grab(monitor)
+        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=self.quality)
+        return base64.b64encode(buf.getvalue()).decode()
+
     async def _run(self):
         interval = 1.0 / self.fps
         try:
@@ -421,11 +428,7 @@ class ScreenStream:
                 monitor = sct.monitors[0]
                 while self.running:
                     t0 = time.monotonic()
-                    sct_img = sct.grab(monitor)
-                    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=self.quality)
-                    b64 = base64.b64encode(buf.getvalue()).decode()
+                    b64 = await asyncio.to_thread(self._grab_screen_frame, sct, monitor)
                     await _safe_send(self.ws, self.fernet, {
                         "type": "screen_frame",
                         "payload": {"image_b64": b64},
@@ -479,6 +482,17 @@ class CameraStream:
                 pass
             self.cap = None
 
+    def _read_cam_frame(self, encode_param):
+        if not self.cap or not self.cap.isOpened():
+            return None
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+        ret, enc = cv2.imencode(".jpg", frame, encode_param)
+        if not ret:
+            return None
+        return base64.b64encode(enc.tobytes()).decode()
+
     async def _run(self):
         try:
             self.cap = cv2.VideoCapture(self.camera_index)
@@ -493,18 +507,15 @@ class CameraStream:
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.quality]
             while self.running:
                 t0 = time.monotonic()
-                ret, frame = self.cap.read()
-                if not ret:
-                    await asyncio.sleep(0.1)
+                b64 = await asyncio.to_thread(self._read_cam_frame, encode_param)
+                if b64:
+                    await _safe_send(self.ws, self.fernet, {
+                        "type": "stream_frame",
+                        "payload": {"image_b64": b64},
+                    })
+                else:
+                    await asyncio.sleep(0.05)
                     continue
-                ret, enc = cv2.imencode(".jpg", frame, encode_param)
-                if not ret:
-                    continue
-                b64 = base64.b64encode(enc.tobytes()).decode()
-                await _safe_send(self.ws, self.fernet, {
-                    "type": "stream_frame",
-                    "payload": {"image_b64": b64},
-                })
                 dt = time.monotonic() - t0
                 sleep_time = interval - dt
                 if sleep_time > 0:
@@ -1152,7 +1163,7 @@ async def handle_session(ws, fernet, vps_url, uid, secret):
             elif t == "stream_start":
                 if camera:
                     await camera.stop()
-                camera = CameraStream(ws, fernet, camera_index=p.get("index", 0), fps=p.get("fps", 10))
+                camera = CameraStream(ws, fernet, camera_index=p.get("index", 0), fps=p.get("fps", 10), quality=p.get("quality", 60))
                 await camera.start()
 
             elif t == "stream_stop":
