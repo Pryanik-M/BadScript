@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard — BadScript Panel{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <h2>&#x1f4e1; Устройства</h2>
+    <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">
+        + Добавить
+    </button>
+</div>
+
+<div class="device-grid">
+    {% for device in devices %}
+    <a href="{% url 'device_detail' device.pk %}" class="device-card {% if device.is_online %}online{% else %}offline{% endif %}">
+        <div class="device-status">
+            {% if device.is_online %}
+            <span class="dot dot-green"></span> Онлайн
+            {% else %}
+            <span class="dot dot-red"></span> Офлайн
+            {% endif %}
+        </div>
+        <h3>{{ device.name }}</h3>
+        <div class="device-info">
+            <span>UID: {{ device.uid }}</span>
+            {% if device.hostname %}<span>{{ device.hostname }}</span>{% endif %}
+            {% if device.last_ip %}<span>IP: {{ device.last_ip }}</span>{% endif %}
+            {% if device.os_info %}<span>{{ device.os_info|truncatechars:40 }}</span>{% endif %}
+            {% if device.last_seen %}<span>Был: {{ device.last_seen|timesince }} назад</span>{% endif %}
+        </div>
+        <form method="post" action="{% url 'device_delete' device.pk %}"
+              class="device-delete" onclick="event.stopPropagation(); event.preventDefault();">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-danger"
+                    onclick="return confirm('Удалить {{ device.name }}?')">&#x2716;</button>
+        </form>
+    </a>
+    {% empty %}
+    <div class="empty-state">
+        <p>Нет устройств. Добавьте первое устройство.</p>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Модалка добавления -->
+<div id="add-modal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <h3>Добавить устройство</h3>
+        <form method="post" action="{% url 'device_add' %}">
+            {% csrf_token %}
+            <div class="form-group">
+                <label>Название</label>
+                {{ form.name }}
+            </div>
+            <div class="form-group">
+                <label>Секретный токен</label>
+                {{ form.secret }}
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline"
+                        onclick="document.getElementById('add-modal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Добавить</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -1,9 +1,9 @@
 [
   {
-    "uid": "02da74fc",
-    "name": "1",
-    "host": "10.60.62.51",
+    "uid": "d4690bc7",
+    "name": "PC-9544",
+    "host": "0.0.0.0",
     "port": 8765,
-    "secret": "mypassword123"
+    "secret": "YOUR_TOKEN"
   }
 ]

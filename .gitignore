@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*/__pycache__/
+*/*/__pycache__/
+*/*/*/__pycache__/
+
+# Django Database
+*.sqlite3
+db.sqlite3
+panel/db.sqlite3
+
+# Logs
+*.log
+server.log
+agent.log
+
+# IDE & editors
+.idea/
+.vscode/
+
+# Media / Recordings
+recordings/
+screen_recordings/
+agent/recordings/
+agent/screen_recordings/
+_update_cache/
+_update/
+
+# PyInstaller / Build
+dist/
+build/
+*.spec
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Temporary / OS files
+.DS_Store
+Thumbs.db
+ENI Antigravity Stuff.md

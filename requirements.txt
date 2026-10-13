@@ -1,27 +1,28 @@
+# Django Web Panel (на VPS):
+django>=5.0
+channels>=4.0
+daphne>=4.0
+
+# Сеть и безопасность:
 websockets>=12
 cryptography>=41
 
-# -- Optional, but recommended --
-# Screenshots:
+# -- Зависимости агента (на управляемых ПК) --
+# Скриншоты и стриминг экрана:
 mss>=9
 pillow>=10
+opencv-python>=4.8
 
-# Camera streaming:
-# opencv-python>=4.8
+# Кейлоггер:
+keyboard>=0.13
+pynput>=1.7
 
-# Keylogger (choose one):
-# keyboard>=0.13
-# pynput>=1.7
-
-# Process/system info:
+# Процессы и системная информация:
 psutil>=5.9
 
-# Audio recording:
-# sounddevice>=0.4
-# numpy>=1.24
+# Запись звука:
+sounddevice>=0.4
+numpy>=1.24
 
-# Mouse/keyboard control:
-# pyautogui>=0.9
-
-# Telegram bot:
-# python-telegram-bot>=20
+# Управление мышью и клавиатурой:
+pyautogui>=0.9

