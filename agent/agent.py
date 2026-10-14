@@ -1584,15 +1584,15 @@ def load_config_env():
     for c in candidates:
         if os.path.isfile(c):
             try:
-                with open(c, "r", encoding="utf-8", errors="replace") as f:
+                with open(c, "r", encoding="utf-8-sig", errors="replace") as f:
                     for line in f:
-                        line = line.strip()
+                        line = line.strip().lstrip("\ufeff")
                         if not line or line.startswith("#") or "=" not in line:
                             continue
                         k, v = line.split("=", 1)
-                        k = k.strip()
+                        k = k.strip().lstrip("\ufeff").upper()
                         v = v.strip().strip('"').strip("'")
-                        if k and not os.environ.get(k):
+                        if k:
                             os.environ[k] = v
                 break
             except Exception:
