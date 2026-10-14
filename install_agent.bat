@@ -59,7 +59,15 @@ if "%VPS_URL%"=="" (
     exit /b 1
 )
 
-for /f "delims=" %%u in ('%PY_BIN% -c "import urllib.parse; u='%VPS_URL%'.strip(); u='ws://'+u[7:] if u.startswith('http://') else ('wss://'+u[8:] if u.startswith('https://') else (u if u.startswith(('ws://','wss://')) else 'ws://'+u)); p=urllib.parse.urlparse(u); u=u.rstrip('/')+'/ws/agent/' if not p.path or p.path=='/' else (u if u.endswith('/') else u+'/'); print(u)"') do set "VPS_URL=%%u"
+if not "%VPS_URL:~0,5%"=="ws://" if not "%VPS_URL:~0,6%"=="wss://" (
+    if "%VPS_URL:~0,7%"=="http://" (
+        set "VPS_URL=ws://%VPS_URL:~7%"
+    ) else if "%VPS_URL:~0,8%"=="https://" (
+        set "VPS_URL=wss://%VPS_URL:~8%"
+    ) else (
+        set "VPS_URL=ws://%VPS_URL%"
+    )
+)
 
 set /p "DEVICE_UID=  UID устройства (из панели): "
 if "%DEVICE_UID%"=="" (
@@ -125,21 +133,31 @@ if %errorlevel% neq 0 (
 )
 
 :: 5. Сохранение конфигурации
-echo VPS_URL=%VPS_URL%> "%INSTALL_DIR%\config.env"
-echo DEVICE_UID=%DEVICE_UID%>> "%INSTALL_DIR%\config.env"
-echo DEVICE_SECRET=%DEVICE_SECRET%>> "%INSTALL_DIR%\config.env"
+(
+echo VPS_URL=%VPS_URL%
+echo DEVICE_UID=%DEVICE_UID%
+echo DEVICE_SECRET=%DEVICE_SECRET%
+) > "%INSTALL_DIR%\config.env"
+
+(
+echo {
+echo   "VPS_URL": "%VPS_URL%",
+echo   "DEVICE_UID": "%DEVICE_UID%",
+echo   "DEVICE_SECRET": "%DEVICE_SECRET%"
+echo }
+) > "%INSTALL_DIR%\config.json"
 
 :: 6. Создание лаунчеров
 (
 echo @echo off
 echo cd /d "%INSTALL_DIR%"
-echo start "" "%VENV_DIR%\Scripts\pythonw.exe" "%INSTALL_DIR%\agent.py" --watchdog --hidden
+echo start "" "%VENV_DIR%\Scripts\pythonw.exe" "%INSTALL_DIR%\agent.py" --vps "%VPS_URL%" --uid "%DEVICE_UID%" --secret "%DEVICE_SECRET%" --watchdog --hidden
 ) > "%INSTALL_DIR%\run.bat"
 
 (
 echo @echo off
 echo cd /d "%INSTALL_DIR%"
-echo "%VENV_DIR%\Scripts\python.exe" "%INSTALL_DIR%\agent.py" --watchdog
+echo "%VENV_DIR%\Scripts\python.exe" "%INSTALL_DIR%\agent.py" --vps "%VPS_URL%" --uid "%DEVICE_UID%" --secret "%DEVICE_SECRET%" --watchdog
 echo pause
 ) > "%INSTALL_DIR%\run_console.bat"
 

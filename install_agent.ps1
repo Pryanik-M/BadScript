@@ -141,14 +141,14 @@ DEVICE_SECRET=$Secret
 $RunBat = @"
 @echo off
 cd /d "$InstallDir"
-start "" "$VenvDir\Scripts\pythonw.exe" "$InstallDir\agent.py" --watchdog --hidden
+start "" "$VenvDir\Scripts\pythonw.exe" "$InstallDir\agent.py" --vps "$VpsUrl" --uid "$Uid" --secret "$Secret" --watchdog --hidden
 "@
 $RunBat | Out-File -FilePath "$InstallDir\run.bat" -Encoding ascii
 
 $RunConsoleBat = @"
 @echo off
 cd /d "$InstallDir"
-"$VenvDir\Scripts\python.exe" "$InstallDir\agent.py" --watchdog
+"$VenvDir\Scripts\python.exe" "$InstallDir\agent.py" --vps "$VpsUrl" --uid "$Uid" --secret "$Secret" --watchdog
 pause
 "@
 $RunConsoleBat | Out-File -FilePath "$InstallDir\run_console.bat" -Encoding ascii
