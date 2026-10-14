@@ -141,16 +141,15 @@ DEVICE_SECRET=$Secret
 $RunBat = @"
 @echo off
 cd /d "$InstallDir"
-for /f "usebackq tokens=1,* delims==" %%A in ("config.env") do set "%%A=%%B"
-start "" "$VenvDir\Scripts\pythonw.exe" "$InstallDir\agent.py" --vps "%VPS_URL%" --uid "%DEVICE_UID%" --secret "%DEVICE_SECRET%" --watchdog --hidden
+start "" "$VenvDir\Scripts\pythonw.exe" "$InstallDir\agent.py" --watchdog --hidden
 "@
 $RunBat | Out-File -FilePath "$InstallDir\run.bat" -Encoding ascii
 
 $RunConsoleBat = @"
 @echo off
 cd /d "$InstallDir"
-for /f "usebackq tokens=1,* delims==" %%A in ("config.env") do set "%%A=%%B"
-"$VenvDir\Scripts\python.exe" "$InstallDir\agent.py" --vps "%VPS_URL%" --uid "%DEVICE_UID%" --secret "%DEVICE_SECRET%" --watchdog
+"$VenvDir\Scripts\python.exe" "$InstallDir\agent.py" --watchdog
+pause
 "@
 $RunConsoleBat | Out-File -FilePath "$InstallDir\run_console.bat" -Encoding ascii
 

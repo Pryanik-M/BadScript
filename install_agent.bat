@@ -133,15 +133,14 @@ echo DEVICE_SECRET=%DEVICE_SECRET%>> "%INSTALL_DIR%\config.env"
 (
 echo @echo off
 echo cd /d "%INSTALL_DIR%"
-echo for /f "usebackq tokens=1,* delims==" %%%%A in ("config.env"^) do set "%%%%A=%%%%B"
-echo start "" "%VENV_DIR%\Scripts\pythonw.exe" "%INSTALL_DIR%\agent.py" --vps "%%VPS_URL%%" --uid "%%DEVICE_UID%%" --secret "%%DEVICE_SECRET%%" --watchdog --hidden
+echo start "" "%VENV_DIR%\Scripts\pythonw.exe" "%INSTALL_DIR%\agent.py" --watchdog --hidden
 ) > "%INSTALL_DIR%\run.bat"
 
 (
 echo @echo off
 echo cd /d "%INSTALL_DIR%"
-echo for /f "usebackq tokens=1,* delims==" %%%%A in ("config.env"^) do set "%%%%A=%%%%B"
-echo "%VENV_DIR%\Scripts\python.exe" "%INSTALL_DIR%\agent.py" --vps "%%VPS_URL%%" --uid "%%DEVICE_UID%%" --secret "%%DEVICE_SECRET%%" --watchdog
+echo "%VENV_DIR%\Scripts\python.exe" "%INSTALL_DIR%\agent.py" --watchdog
+echo pause
 ) > "%INSTALL_DIR%\run_console.bat"
 
 echo [OK] Лаунчеры созданы:
