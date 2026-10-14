@@ -113,16 +113,27 @@
 
 <!-- Терминал -->
 <div class="tab-content" id="tab-shell">
-    <div class="tab-toolbar">
+    <div class="tab-toolbar" style="flex-wrap:wrap;gap:8px;">
         <button class="btn btn-primary" id="shell-toggle" onclick="toggleShell()">
             Открыть Shell
         </button>
+        <button class="btn btn-outline" id="btn-shell-ctrl-c" onclick="shellSendSignal('ctrl_c')" title="Прервать текущий процесс (Ctrl+C)">
+            ⚡ Ctrl+C
+        </button>
+        <button class="btn btn-outline" id="btn-shell-ctrl-d" onclick="shellSendSignal('ctrl_d')" title="Выход / EOF (Ctrl+D)">
+            🚪 Ctrl+D
+        </button>
+        <button class="btn btn-outline" onclick="shellClear()" title="Очистить терминал">
+            🧹 Очистить
+        </button>
     </div>
-    <pre id="shell-output" class="output-box terminal"></pre>
+    <pre id="shell-output" class="output-box terminal" style="min-height:350px;max-height:550px;font-family:monospace;"></pre>
     <div class="shell-input-row" style="display:none" id="shell-input-row">
         <span class="shell-prompt">&gt;</span>
         <input type="text" id="shell-input" class="form-input"
-               onkeydown="if(event.key==='Enter') shellSend()">
+               placeholder="Команда (Enter для отправки, работают Ctrl+C, Ctrl+D, стрелки вверх/вниз)..."
+               autocomplete="off">
+        <button class="btn btn-primary" onclick="shellSend()">Ввод</button>
     </div>
 </div>
 

@@ -153,7 +153,10 @@ function handleMessage(msg) {
     // Shell
     if (t === 'shell_output') {
         const out = document.getElementById('shell-output');
-        out.textContent += (p.stdout || '') + (p.stderr || '');
+        let text = (p.stdout || '') + (p.stderr || '');
+        // Очищаем ANSI escape-последовательности терминала для чистого вывода в <pre>
+        text = text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\([a-zA-Z]/g, '').replace(/\x07/g, '');
+        out.textContent += text;
         out.scrollTop = out.scrollHeight;
         return;
     }
@@ -162,6 +165,10 @@ function handleMessage(msg) {
         document.getElementById('shell-input-row').style.display = 'flex';
         document.getElementById('shell-toggle').textContent = 'Закрыть Shell';
         document.getElementById('shell-output').textContent = '';
+        setTimeout(() => {
+            const input = document.getElementById('shell-input');
+            if (input) input.focus();
+        }, 100);
         return;
     }
     if (t === 'shell_closed') {
@@ -312,6 +319,9 @@ function execCmd() {
     sendCmd('exec', { command: cmd, timeout: 60 });
 }
 
+let shellHistory = [];
+let shellHistoryIdx = -1;
+
 function toggleShell() {
     if (shellOpen) {
         sendCmd('shell_close', {});
@@ -322,8 +332,26 @@ function toggleShell() {
 
 function shellSend() {
     const input = document.getElementById('shell-input');
-    sendCmd('shell_input', { data: input.value });
+    const val = input.value;
+    if (val.trim()) {
+        shellHistory.push(val);
+        shellHistoryIdx = shellHistory.length;
+    }
+    sendCmd('shell_input', { data: val, raw: false });
     input.value = '';
+}
+
+function shellSendSignal(sig) {
+    if (sig === 'ctrl_c') {
+        sendCmd('shell_input', { data: '\x03', raw: true });
+    } else if (sig === 'ctrl_d') {
+        sendCmd('shell_input', { data: '\x04', raw: true });
+    }
+}
+
+function shellClear() {
+    const out = document.getElementById('shell-output');
+    if (out) out.textContent = '';
 }
 
 function fsBrowse() {
@@ -687,6 +715,40 @@ function uploadFileToAgent() {
     };
 
     reader.readAsArrayBuffer(file);
+}
+
+// ===== Клавиатурные сокращения для Shell =====
+const shellInputEl = document.getElementById('shell-input');
+if (shellInputEl) {
+    shellInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            shellSend();
+        } else if (e.key === 'c' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            shellSendSignal('ctrl_c');
+        } else if (e.key === 'd' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            shellSendSignal('ctrl_d');
+        } else if (e.key === 'ArrowUp') {
+            if (shellHistory.length > 0 && shellHistoryIdx > 0) {
+                shellHistoryIdx--;
+                shellInputEl.value = shellHistory[shellHistoryIdx];
+            } else if (shellHistory.length > 0 && shellHistoryIdx === 0) {
+                shellInputEl.value = shellHistory[0];
+            }
+            e.preventDefault();
+        } else if (e.key === 'ArrowDown') {
+            if (shellHistoryIdx < shellHistory.length - 1) {
+                shellHistoryIdx++;
+                shellInputEl.value = shellHistory[shellHistoryIdx];
+            } else {
+                shellHistoryIdx = shellHistory.length;
+                shellInputEl.value = '';
+            }
+            e.preventDefault();
+        }
+    });
 }
 
 // ===== Запуск =====

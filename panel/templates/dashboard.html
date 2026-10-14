@@ -27,12 +27,11 @@
             {% if device.os_info %}<span>{{ device.os_info|truncatechars:40 }}</span>{% endif %}
             {% if device.last_seen %}<span>Был: {{ device.last_seen|timesince }} назад</span>{% endif %}
         </div>
-        <form method="post" action="{% url 'device_delete' device.pk %}"
-              class="device-delete" onclick="event.stopPropagation(); event.preventDefault();">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-danger"
-                    onclick="return confirm('Удалить {{ device.name }}?')">&#x2716;</button>
-        </form>
+        <button type="button" class="btn btn-sm btn-danger device-delete"
+                title="Удалить"
+                onclick="event.preventDefault(); event.stopPropagation(); deleteDevice('{% url 'device_delete' device.pk %}', '{{ device.name|escapejs }}')">
+            &#x2716;
+        </button>
     </a>
     {% empty %}
     <div class="empty-state">
@@ -40,6 +39,21 @@
     </div>
     {% endfor %}
 </div>
+
+<!-- Скрытая форма для удаления устройства -->
+<form id="delete-device-form" method="post" style="display:none;">
+    {% csrf_token %}
+</form>
+
+<script>
+function deleteDevice(url, name) {
+    if (confirm('Вы действительно хотите удалить устройство "' + name + '"?')) {
+        const form = document.getElementById('delete-device-form');
+        form.action = url;
+        form.submit();
+    }
+}
+</script>
 
 <!-- Модалка добавления -->
 <div id="add-modal" class="modal" style="display:none;">

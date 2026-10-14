@@ -205,7 +205,7 @@ VPS_URL="$VPS_URL"
 DEVICE_UID="$DEVICE_UID"
 DEVICE_SECRET="$DEVICE_SECRET"
 EOF
-chmod 600 "$CONFIG_FILE"
+chmod 644 "$CONFIG_FILE"
 log_ok "Конфиг сохранён: $CONFIG_FILE"
 
 # ============================================================

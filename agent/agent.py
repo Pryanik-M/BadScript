@@ -570,15 +570,46 @@ async def run_command(command, timeout=60):
 # ===================================================================
 # Interactive Shell
 # ===================================================================
+# ===================================================================
+# Interactive Shell (PTY on Linux/Unix, unbuffered chunk-stream on Windows)
+# ===================================================================
 class ShellSession:
     def __init__(self, ws, fernet):
         self.ws = ws
         self.fernet = fernet
         self.proc = None
+        self.master_fd = None
         self.reader_task = None
+        self.is_pty = False
 
     async def open(self):
-        shell_cmd = "cmd.exe" if IS_WINDOWS else os.environ.get("SHELL", "/bin/bash")
+        if not IS_WINDOWS:
+            try:
+                import pty
+                self.master_fd, slave_fd = pty.openpty()
+                shell_cmd = os.environ.get("SHELL") or "/bin/bash"
+                env = dict(os.environ)
+                env["TERM"] = "xterm-256color"
+                env["PAGER"] = "cat"
+                self.proc = subprocess.Popen(
+                    [shell_cmd, "-i"],
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    preexec_fn=os.setsid,
+                    close_fds=True,
+                    env=env,
+                )
+                os.close(slave_fd)
+                self.is_pty = True
+                self.reader_task = asyncio.create_task(self._read_loop_pty())
+                await _safe_send(self.ws, self.fernet, {"type": "shell_opened", "payload": {}})
+                return
+            except Exception as e:
+                log.warning("PTY open failed, falling back to pipe: %s", e)
+
+        # Windows или fallback
+        shell_cmd = "cmd.exe" if IS_WINDOWS else (os.environ.get("SHELL") or "/bin/bash")
         flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
         self.proc = await asyncio.create_subprocess_exec(
             shell_cmd,
@@ -587,42 +618,97 @@ class ShellSession:
             stderr=asyncio.subprocess.STDOUT,
             creationflags=flags,
         )
-        self.reader_task = asyncio.create_task(self._read_loop())
+        self.is_pty = False
+        self.reader_task = asyncio.create_task(self._read_loop_pipe())
         await _safe_send(self.ws, self.fernet, {"type": "shell_opened", "payload": {}})
 
-    async def write(self, data):
-        if self.proc and self.proc.stdin and not self.proc.stdin.is_closing():
-            newline = "\r\n" if IS_WINDOWS else "\n"
-            self.proc.stdin.write(data.encode("utf-8") + newline.encode())
-            await self.proc.stdin.drain()
+    async def write(self, data, is_raw=False):
+        if self.is_pty and self.master_fd is not None:
+            try:
+                if is_raw:
+                    payload = data.encode("utf-8", errors="replace")
+                else:
+                    payload = (data + "\n").encode("utf-8", errors="replace")
+                os.write(self.master_fd, payload)
+            except Exception as e:
+                log.debug("PTY write error: %s", e)
+        elif self.proc and self.proc.stdin and not self.proc.stdin.is_closing():
+            try:
+                if is_raw:
+                    payload = data.encode("utf-8", errors="replace")
+                else:
+                    newline = "\r\n" if IS_WINDOWS else "\n"
+                    payload = (data + newline).encode("utf-8", errors="replace")
+                self.proc.stdin.write(payload)
+                await self.proc.stdin.drain()
+            except Exception as e:
+                log.debug("Pipe write error: %s", e)
 
     async def close(self):
         if self.reader_task:
             self.reader_task.cancel()
+            self.reader_task = None
+        if self.master_fd is not None:
+            try:
+                os.close(self.master_fd)
+            except Exception:
+                pass
+            self.master_fd = None
         if self.proc:
             try:
-                self.proc.terminate()
-                await asyncio.wait_for(self.proc.wait(), timeout=2)
+                if hasattr(self.proc, "kill"):
+                    self.proc.kill()
+                elif hasattr(self.proc, "terminate"):
+                    self.proc.terminate()
             except Exception:
-                self.proc.kill()
+                pass
+            self.proc = None
         await _safe_send(self.ws, self.fernet, {"type": "shell_closed", "payload": {}})
 
-    async def _read_loop(self):
+    def _read_pty_sync(self):
+        if self.master_fd is None:
+            return None
+        try:
+            return os.read(self.master_fd, 4096)
+        except (OSError, ValueError):
+            return None
+
+    async def _read_loop_pty(self):
+        loop = asyncio.get_running_loop()
+        try:
+            while self.master_fd is not None:
+                chunk = await loop.run_in_executor(None, self._read_pty_sync)
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", errors="replace")
+                await _safe_send(self.ws, self.fernet, {
+                    "type": "shell_output",
+                    "payload": {"stdout": text, "stderr": ""},
+                })
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.debug("PTY read loop exception: %s", e)
+        finally:
+            await _safe_send(self.ws, self.fernet, {"type": "shell_closed", "payload": {}})
+
+    async def _read_loop_pipe(self):
         try:
             if self.proc and self.proc.stdout:
                 while True:
-                    line = await self.proc.stdout.readline()
-                    if not line:
+                    # Читаем чанками (до 2048 байт), а не строками (readline), чтобы приглашение (prompt) появлялось сразу!
+                    chunk = await self.proc.stdout.read(2048)
+                    if not chunk:
                         break
                     text = None
                     for enc in ("utf-8", "cp1251", "cp866", "latin-1"):
                         try:
-                            text = line.decode(enc, errors="strict")
+                            text = chunk.decode(enc, errors="strict")
                             break
                         except UnicodeDecodeError:
                             continue
                     if text is None:
-                        text = line.decode("utf-8", errors="replace")
+                        text = chunk.decode("utf-8", errors="replace")
                     await _safe_send(self.ws, self.fernet, {
                         "type": "shell_output",
                         "payload": {"stdout": text, "stderr": ""},
@@ -630,7 +716,9 @@ class ShellSession:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            log.error("Shell read error: %s", e)
+            log.debug("Pipe read loop error: %s", e)
+        finally:
+            await _safe_send(self.ws, self.fernet, {"type": "shell_closed", "payload": {}})
 
 
 # ===================================================================
@@ -1142,7 +1230,7 @@ async def handle_session(ws, fernet, vps_url, uid, secret):
 
             elif t == "shell_input":
                 if shell_session:
-                    await shell_session.write(p.get("data", ""))
+                    await shell_session.write(p.get("data", ""), is_raw=p.get("raw", False))
 
             elif t == "shell_close":
                 if shell_session:
