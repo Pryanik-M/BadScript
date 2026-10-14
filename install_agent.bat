@@ -59,6 +59,8 @@ if "%VPS_URL%"=="" (
     exit /b 1
 )
 
+for /f "delims=" %%u in ('%PY_BIN% -c "import urllib.parse; u='%VPS_URL%'.strip(); u='ws://'+u[7:] if u.startswith('http://') else ('wss://'+u[8:] if u.startswith('https://') else (u if u.startswith(('ws://','wss://')) else 'ws://'+u)); p=urllib.parse.urlparse(u); u=u.rstrip('/')+'/ws/agent/' if not p.path or p.path=='/' else (u if u.endswith('/') else u+'/'); print(u)"') do set "VPS_URL=%%u"
+
 set /p "DEVICE_UID=  UID устройства (из панели): "
 if "%DEVICE_UID%"=="" (
     echo [X] UID не может быть пустым!

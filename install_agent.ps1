@@ -61,6 +61,18 @@ if ([string]::IsNullOrWhiteSpace($VpsUrl)) {
     exit 1
 }
 
+$VpsUrl = $VpsUrl.Trim()
+if ($VpsUrl -notmatch '^wss?://') {
+    if ($VpsUrl -match '^https?://') {
+        $VpsUrl = $VpsUrl -replace '^http', 'ws'
+    } else {
+        $VpsUrl = "ws://$VpsUrl"
+    }
+}
+if ($VpsUrl -notmatch '/ws/agent/?$') {
+    $VpsUrl = $VpsUrl.TrimEnd('/') + '/ws/agent/'
+}
+
 $Uid = Read-Host "  UID устройства (из панели)"
 if ([string]::IsNullOrWhiteSpace($Uid)) {
     Write-Host "[✗] UID не может быть пустым!" -ForegroundColor Red
