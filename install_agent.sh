@@ -114,58 +114,33 @@ fi
 log_ok "Системные зависимости в порядке"
 
 # ============================================================
-# 3. Скачивание агента с GitHub
+# 3. Скачивание файлов агента с GitHub (без файлов веб-панели)
 # ============================================================
-log_info "Скачивание агента с GitHub..."
+log_info "Скачивание файлов агента с GitHub..."
 
 mkdir -p "$INSTALL_DIR"
-TMP_ZIP=$(mktemp /tmp/badscript_XXXXXX.zip)
+RAW_BASE="https://raw.githubusercontent.com/Pryanik-M/BadScript/main/agent"
 
-if command -v curl &>/dev/null; then
-    curl -sL "$REPO_URL" -o "$TMP_ZIP"
-elif command -v wget &>/dev/null; then
-    wget -q "$REPO_URL" -O "$TMP_ZIP"
-fi
-
-if [ ! -s "$TMP_ZIP" ]; then
-    log_err "Не удалось скачать архив!"
-    rm -f "$TMP_ZIP"
-    exit 1
-fi
-
-log_ok "Архив скачан"
-
-# ============================================================
-# 4. Распаковка
-# ============================================================
-log_info "Распаковка..."
-
-TMP_EXTRACT=$(mktemp -d /tmp/badscript_extract_XXXXXX)
-unzip -qo "$TMP_ZIP" -d "$TMP_EXTRACT"
-rm -f "$TMP_ZIP"
-
-# Находим папку agent внутри архива
-AGENT_SRC=""
-for d in "$TMP_EXTRACT"/*/agent; do
-    if [ -d "$d" ]; then
-        AGENT_SRC="$d"
-        break
+download_file() {
+    local url="$1"
+    local dest="$2"
+    if command -v curl &>/dev/null; then
+        curl -sL "$url" -o "$dest"
+    elif command -v wget &>/dev/null; then
+        wget -q "$url" -O "$dest"
     fi
-done
+}
 
-if [ -z "$AGENT_SRC" ] || [ ! -f "$AGENT_SRC/agent.py" ]; then
-    log_err "Не найден agent.py в архиве!"
-    rm -rf "$TMP_EXTRACT"
+download_file "$RAW_BASE/agent.py" "$INSTALL_DIR/agent.py"
+download_file "$RAW_BASE/shared.py" "$INSTALL_DIR/shared.py"
+download_file "$RAW_BASE/requirements.txt" "$INSTALL_DIR/requirements.txt"
+
+if [ ! -s "$INSTALL_DIR/agent.py" ]; then
+    log_err "Не удалось скачать файлы агента! Проверьте интернет-соединение."
     exit 1
 fi
 
-# Копируем файлы агента
-cp -f "$AGENT_SRC/agent.py"   "$INSTALL_DIR/agent.py"
-cp -f "$AGENT_SRC/shared.py"  "$INSTALL_DIR/shared.py"
-cp -f "$AGENT_SRC/requirements.txt" "$INSTALL_DIR/requirements.txt" 2>/dev/null || true
-
-rm -rf "$TMP_EXTRACT"
-log_ok "Файлы агента скопированы в $INSTALL_DIR"
+log_ok "Файлы агента успешно сохранены в $INSTALL_DIR"
 
 # ============================================================
 # 5. Создание виртуального окружения и установка зависимостей

@@ -11,19 +11,46 @@ Write-Host "╚═════════════════════�
 Write-Host ""
 
 $InstallDir = "$env:USERPROFILE\.badscript"
-$RepoZip = "https://github.com/Pryanik-M/BadScript/archive/refs/heads/main.zip"
+$RawBase = "https://raw.githubusercontent.com/Pryanik-M/BadScript/main/agent"
 $VenvDir = "$InstallDir\venv"
 
-# 1. Проверка Python
+# 1. Строгая проверка наличия рабочего Python 3
+$pyCmd = $null
+$pyVer = $null
+
+# Проверяем python
 try {
-    $pyVer = & python --version 2>&1
-    Write-Host "[✓] $pyVer найден" -ForegroundColor Green
-} catch {
-    Write-Host "[✗] Python не найден в системе!" -ForegroundColor Red
-    Write-Host "    Установите Python 3 с https://www.python.org/downloads/ (отметьте Add to PATH)"
+    $out = & python -c "import sys; assert sys.version_info[0] >= 3; print('Python ' + sys.version.split()[0])" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $out) {
+        $pyCmd = "python"
+        $pyVer = $out
+    }
+} catch {}
+
+# Проверяем py launcher
+if (!$pyCmd) {
+    try {
+        $out = & py -3 -c "import sys; assert sys.version_info[0] >= 3; print('Python ' + sys.version.split()[0])" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) {
+            $pyCmd = "py -3"
+            $pyVer = $out
+        }
+    } catch {}
+}
+
+if (!$pyCmd) {
+    Write-Host "[✗] ОШИБКА: Python 3 не найден или не установлен!" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "    Для работы агента требуется Python 3.8+:" -ForegroundColor Yellow
+    Write-Host "    1. Скачайте Python с официального сайта: https://www.python.org/downloads/"
+    Write-Host "    2. При установке ОБЯЗАТЕЛЬНО отметьте галочку 'Add python.exe to PATH'"
+    Write-Host "    3. После установки перезапустите этот установщик."
+    Write-Host ""
     Read-Host "Нажмите Enter для выхода..."
     exit 1
 }
+
+Write-Host "[✓] $pyVer найден ($pyCmd)" -ForegroundColor Green
 
 # 2. Ввод данных подключения
 Write-Host ""
@@ -46,45 +73,43 @@ if ([string]::IsNullOrWhiteSpace($Secret)) {
     exit 1
 }
 
-# 3. Скачивание
+# 3. Скачивание ТОЛЬКО файлов агента (без файлов Django)
 if (!(Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-$TmpZip = "$env:TEMP\badscript_agent.zip"
-$TmpExtract = "$env:TEMP\badscript_extract"
-
 Write-Host ""
-Write-Host "[→] Скачивание агента с GitHub..." -ForegroundColor Cyan
-Invoke-WebRequest -Uri $RepoZip -OutFile $TmpZip
+Write-Host "[→] Скачивание файлов агента с GitHub..." -ForegroundColor Cyan
 
-if (Test-Path $TmpExtract) {
-    Remove-Item $TmpExtract -Recurse -Force
-}
-Expand-Archive -Path $TmpZip -DestinationPath $TmpExtract -Force
-Remove-Item $TmpZip -Force
-
-# Поиск файлов
-$AgentFolder = Get-ChildItem -Path $TmpExtract -Recurse -Filter "agent.py" | Select-Object -First 1
-if (!$AgentFolder) {
-    Write-Host "[✗] agent.py не найден в архиве!" -ForegroundColor Red
+try {
+    Invoke-WebRequest -Uri "$RawBase/agent.py" -OutFile "$InstallDir\agent.py" -UseBasicParsing
+    Invoke-WebRequest -Uri "$RawBase/shared.py" -OutFile "$InstallDir\shared.py" -UseBasicParsing
+    Invoke-WebRequest -Uri "$RawBase/requirements.txt" -OutFile "$InstallDir\requirements.txt" -UseBasicParsing
+} catch {
+    Write-Host "[✗] Ошибка при скачивании файлов: $_" -ForegroundColor Red
     exit 1
 }
 
-$SrcDir = $AgentFolder.DirectoryName
-Copy-Item "$SrcDir\agent.py" "$InstallDir\agent.py" -Force
-Copy-Item "$SrcDir\shared.py" "$InstallDir\shared.py" -Force
-if (Test-Path "$SrcDir\requirements.txt") {
-    Copy-Item "$SrcDir\requirements.txt" "$InstallDir\requirements.txt" -Force
+if (!(Test-Path "$InstallDir\agent.py")) {
+    Write-Host "[✗] Ошибка: agent.py не был сохранён!" -ForegroundColor Red
+    exit 1
 }
-Remove-Item $TmpExtract -Recurse -Force
 
-Write-Host "[✓] Файлы агента скопированы в: $InstallDir" -ForegroundColor Green
+Write-Host "[✓] Файлы агента сохранены в: $InstallDir" -ForegroundColor Green
 
 # 4. Виртуальное окружение
-Write-Host "[→] Настройка виртуального окружения Python..." -ForegroundColor Cyan
-if (!(Test-Path $VenvDir)) {
-    & python -m venv $VenvDir
+Write-Host "[→] Создание виртуального окружения Python..." -ForegroundColor Cyan
+if (!(Test-Path "$VenvDir\Scripts\python.exe")) {
+    if ($pyCmd -eq "py -3") {
+        & py -3 -m venv $VenvDir
+    } else {
+        & python -m venv $VenvDir
+    }
+}
+
+if (!(Test-Path "$VenvDir\Scripts\python.exe")) {
+    Write-Host "[✗] Не удалось создать виртуальное окружение venv!" -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "[→] Установка библиотек..." -ForegroundColor Cyan
@@ -118,10 +143,11 @@ for /f "usebackq tokens=1,* delims==" %%A in ("config.env") do set "%%A=%%B"
 $RunConsoleBat | Out-File -FilePath "$InstallDir\run_console.bat" -Encoding ascii
 
 # 7. Автозапуск
+Write-Host ""
 $Autostart = Read-Host "Установить автозапуск при входе в систему? [Y/n]"
 if ($Autostart -ne "n" -and $Autostart -ne "N") {
     Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BadScriptAgent" -Value "`"$InstallDir\run.bat`""
-    Write-Host "[✓] Автозапуск добавлен в реестр" -ForegroundColor Green
+    Write-Host "[✓] Автозапуск добавлен в реестр (HKCU Run)" -ForegroundColor Green
 }
 
 Write-Host ""
